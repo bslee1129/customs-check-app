@@ -107,7 +107,6 @@ if uploaded_files and st.session_state["start_analysis"]:
     
     for uploaded_file in uploaded_files:
         src_image = Image.open(uploaded_file)
-        # 이미지 압축 가공
         img_for_ai = src_image.copy()
         img_for_ai.thumbnail((1024, 1024))
         ai_contents.append(img_for_ai)
@@ -149,7 +148,7 @@ if uploaded_files and st.session_state["start_analysis"]:
                         match_type = "🟡 성분명 일치 매칭됨"
                         break
 
-    # 3. 최종 세관 검사 판정 보고서 렌더링 (최상단 노출)
+    # 3. 최종 세관 검사 판정 보고서 렌더링
     st.subheader("📋 세관 검사 판정 보고서")
     
     if matched_row is not None:
@@ -159,96 +158,33 @@ if uploaded_files and st.session_state["start_analysis"]:
         final_decision = "🟢 통관 가능"
         st.success(f"결과: {final_decision}")
         
+    # 🚨 [핵심 업데이트] 결과값을 강조하는 특제 하이라이트 Badge UI 적용
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown(f"**1. OCR 분석 정보 (사진 {len(uploaded_files)}장 취합 결과)**\n"
-                    f"* 식별된 브랜드: `{brand}`\n"
-                    f"* 식별된 제품명: `{product_name}`\n"
-                    f"* 식별된 바코드: `{barcode}`")
+        st.markdown(f"""
+        **1. OCR 분석 정보 (사진 {len(uploaded_files)}장 취합 결과)**
+        * 식별된 브랜드: <span style="background-color: #e7f5ff; color: #007bff; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 15px;">{brand}</span>
+        * 식별된 제품명: <span style="background-color: #fff0f6; color: #d6336c; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 15px;">{product_name}</span>
+        * 식별된 바코드: <span style="background-color: #f1f3f5; color: #495057; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 15px;">{barcode}</span>
+        """, unsafe_allow_html=True)
     with col2:
         reg_num = matched_row['등록번호'] if matched_row is not None else "해당 없음"
-        st.markdown(f"**2. DB 대조 결과**\n"
-                    f"* 등록번호: `{reg_num}`\n"
-                    f"* DB 매칭 여부: **{match_type}**")
+        
+        # 매칭 상태별 동적 강조 스타일 정의
+        if "🔴" in match_type:
+            match_badge = f'background-color: #fff5f5; color: #fa5252; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 15px;'
+        elif "🟡" in match_type:
+            match_badge = f'background-color: #fff9db; color: #fab005; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 15px;'
+        else:
+            match_badge = f'background-color: #ebfbee; color: #40c057; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 15px;'
+            
+        st.markdown(f"""
+        **2. DB 대조 결과**
+        * 등록번호: <span style="background-color: #e8f7ff; color: #1c7ed6; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 15px;">{reg_num}</span>
+        * DB 매칭 여부: <span style="{match_badge}">{match_type}</span>
+        """, unsafe_allow_html=True)
                     
     st.markdown("---")
     st.markdown("**3. 불법의약품DB 상세 정보**")
     
-    if matched_row is not None:
-        def get_clean_db_value(row, column_name):
-            val = row.get(column_name)
-            if pd.isna(val) or str(val).strip().lower() == 'nan' or not str(val).strip():
-                if column_name == '통관보류사유내용':
-                    return f"위해 성분({row.get('성분명', '확인불가')}) 검출 및 함유로 인한 현장 통관 보류 대상 물품"
-                elif column_name == '정보출처':
-                    return "식품의약품안전처(식약처) 위해식품 반입차단 목록"
-                elif column_name == '관련근거':
-                    return "수입식품안전관리 특별법 제25조의3 (위해식품등의 반입 차단)"
-                return "확인 불가"
-            return str(val)
-
-        st.write(f"• **정보 출처:** {get_clean_db_value(matched_row, '정보출처')}")
-        st.write(f"• **통관 보류 사유:** {get_clean_db_value(matched_row, '통관보류사유내용')}")
-        st.write(f"• **법적 관련 근거:** {get_clean_db_value(matched_row, '관련근거')}")
-        
-        # 🚨 [대폭 개편] 4. 복수 이미지 교차 전수 대조 레이아웃 (상/하 세로 스택 구조)
-        url_data = str(matched_row.get('원본이미지URL', ''))
-        if url_data and url_data.lower() != 'nan':
-            st.markdown("---")
-            st.markdown("### 🔍 [현장 교차 검증] 사진 비교 대조")
-            st.caption("상단의 촬영 현품 사진들과 하단의 DB 등록 원본 사진들의 패키지를 대조하십시오.")
-            
-            # [수정 사항 1 & 2] 상단: 내가 촬영한 현품 사진 섹션 (가로 병렬 축소 배치)
-            st.info("📸 내가 촬영한 현품 사진")
-            user_cols = st.columns(len(uploaded_files))
-            for u_idx, u_file in enumerate(uploaded_files):
-                with user_cols[u_idx]:
-                    st.image(Image.open(u_file), caption=f"촬영 사진 {u_idx+1}", use_container_width=True)
-            
-            # 상하 섹션 구분을 위한 명확한 선 표출 및 여백
-            st.markdown("<hr style='margin: 25px 0; border-top: 2px solid #007bff;'>", unsafe_allow_html=True)
-            
-            # [수정 사항 1 & 2] 하단: DB 등록 원본 이미지 섹션 (가로 병렬 축소 배치)
-            st.warning("🔗 DB 등록 원본 이미지")
-            urls = [u.strip() for u in url_data.split(',') if u.strip()]
-            db_cols = st.columns(len(urls))
-            
-            for idx, url in enumerate(urls):
-                success = False
-                error_msg = ""
-                
-                for attempt in range(2):
-                    try:
-                        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-                        img_response = requests.get(url, headers=headers, timeout=15, verify=False)
-                        if img_response.status_code == 200:
-                            db_img = Image.open(io.BytesIO(img_response.content))
-                            # 병렬 칸 내부에 맞춤 축소 표출
-                            with db_cols[idx]:
-                                st.image(db_img, caption=f"DB 사진 {idx+1}", use_container_width=True)
-                            success = True
-                            break
-                        else:
-                            error_msg = f"서버 거부 ({img_response.status_code})"
-                    except Exception as e:
-                        error_msg = f"보안망 연결 실패"
-                
-                if not success:
-                    with db_cols[idx]:
-                        st.caption(f"❌ 사진 {idx+1}: {error_msg}")
-
-            st.markdown("---")
-
-        st.warning(f"**검사원 조치 의견:**\n"
-                   f"본 물품은 [불법의약품DB.xlsx] 대조 원칙 및 파이썬 정규화 매칭 결과, 등록번호 [{reg_num}]번에 "
-                   f"매칭되는 위해 항목임이 확정되었습니다. 내부 규정에 근거하여 현장에서 **통관 보류 및 폐기/반송 조치**하시기 바랍니다.")
-    else:
-        st.write("• 특이사항: 데이터베이스 내 일치하는 위해 규제 이력이 존재하지 않습니다.")
-        st.info("**검사원 조치 의견:** 금지 성분 및 DB 매칭 내역 없으므로 **통관 허용** 처리합니다.")
-
-    # [다음 물품 판정 버튼]
-    st.markdown("---")
-    if st.button("🔄 다음 물품 판정하기 (화면 초기화)", use_container_width=True, type="primary"):
-        st.session_state["uploader_id"] += 1
-        st.session_state["start_analysis"] = False
-        st.rerun()
+    if matched_row is not
