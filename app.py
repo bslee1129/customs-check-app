@@ -49,7 +49,7 @@ if uploaded_file is not None:
             
             # 💡 하루 50회 제한 Pro 모델 원할 시: "gemini-1.5-pro" 로 변경
             # 💡 하루 1,500회 제한 완전 무료 원할 시: "gemini-2.0-flash" 유지
-            model = genai.GenerativeModel(model_name="gemini-2.0-flash")
+            model = genai.GenerativeModel(model_name="gemini-3.5-flash"
             
             prompt = (
                 "Analyze the image and extract product information. "
