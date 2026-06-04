@@ -144,17 +144,17 @@ if uploaded_file is not None:
         st.write(f"• **통관 보류 사유:** {get_clean_db_value(matched_row, '통관보류사유내용')}")
         st.write(f"• **법적 관련 근거:** {get_clean_db_value(matched_row, '관련근거')}")
         
-        # 🚨 [대폭 업그레이드] 4. 좌우 1:1 사진 비교 대조 레이아웃 섹션
+        # 🚨 [수정 및 대폭 보완] 4. 복수 이미지 전수 출력 레이아웃
         url_data = str(matched_row.get('원본이미지URL', ''))
         if url_data and url_data.lower() != 'nan':
             st.markdown("---")
             st.markdown("### 🔍 [현장 교차 검증] 사진 비교 대조")
-            st.caption("좌측의 촬영한 현품과 우측의 DB 등록 원본 사진의 디자인, 폰트, 색상을 대조하십시오.")
+            st.caption("좌측의 촬영한 현품과 우측의 DB 등록 원본 사진들을 대조하십시오. (여러 장의 사진이 모두 표시됩니다.)")
             
-            # URL 문자열 분리 및 청소
+            # URL 문자열을 쉼표 기준으로 쪼개고 공백을 제거하여 순수한 URL 리스트 생성
             urls = [u.strip() for u in url_data.split(',')]
             
-            # 1단계: 화면을 왼쪽(현품)과 오른쪽(DB 원본) 5:5 비율로 분리
+            # 화면을 왼쪽(현품)과 오른쪽(DB 원본 공간) 5:5 비율로 분리
             main_col1, main_col2 = st.columns(2)
             
             with main_col1:
@@ -164,25 +164,27 @@ if uploaded_file is not None:
             with main_col2:
                 st.warning("🔗 DB 등록 원본 이미지")
                 
-                # DB 이미지가 여러 개일 경우를 대비하여 내부에 서브 컬럼 배치
-                sub_cols = st.columns(max(len(urls), 1))
-                
+                # 🚨 핵심 변경: 가로로 쪼개지 않고 세로 루프를 돌려 모든 이미지가 누락 없이 시원하게 다 나오도록 처리
                 for idx, url in enumerate(urls):
+                    if not url:
+                        continue
                     try:
-                        # 방화벽 우회 헤더 설정 및 다운로드
+                        # 정부 기관 서버 보안 방화벽 차단 우회용 헤더 세팅
                         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
                         img_response = requests.get(url, headers=headers, timeout=10)
                         
                         if img_response.status_code == 200:
                             db_img = Image.open(io.BytesIO(img_response.content))
-                            with sub_cols[idx]:
-                                st.image(db_img, caption=f"DB 사진 {idx+1}", use_container_width=True)
+                            # 각 이미지를 온전한 크기로 출력
+                            st.image(db_img, caption=f"DB 사진 {idx+1} / 총 {len(urls)}장", use_container_width=True)
+                            
+                            # 이미지와 이미지 사이에 얇은 분리선 및 여백 추가
+                            if idx < len(urls) - 1:
+                                st.markdown("<hr style='margin: 10px 0; border-top: 1px dashed #ccc;'>", unsafe_allow_html=True)
                         else:
-                            with sub_cols[idx]:
-                                st.caption(f"❌ 접속 불가 (코드: {img_response.status_code})")
+                            st.caption(f"❌ DB 사진 {idx+1}: 접속 불가 (코드: {img_response.status_code})")
                     except Exception as img_err:
-                        with sub_cols[idx]:
-                            st.caption("❌ 이미지를 가져오지 못했습니다.")
+                        st.caption(f"❌ DB 사진 {idx+1}: 주소 연결 실패")
 
         st.warning(f"**검사원 조치 의견:**\n"
                    f"본 물품은 [불법의약품DB.xlsx] 대조 원칙 및 파이썬 정규화 매칭 결과, 등록번호 [{reg_num}]번에 "
