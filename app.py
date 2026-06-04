@@ -44,7 +44,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 🚨 로고와 제목 인라인 배치
+# 로고와 제목 인라인 배치
 logo_path = "Emblem_of_the_Korea_Customs_Service.svg.png"
 
 def get_base64_of_bin_file(bin_file):
@@ -73,7 +73,7 @@ if gemini_key:
 else:
     st.error("⚠️ 오른쪽 하단 Manage app -> Settings -> Secrets에 GEMINI_API_KEY를 등록해 주세요.")
 
-# 🚨 [핵심 업데이트] 이전 결과를 저장하는 히스토리 배열 생성
+# 이전 결과를 저장하는 히스토리 배열 생성
 if "history" not in st.session_state:
     st.session_state["history"] = []
 if "uploader_id" not in st.session_state:
@@ -153,7 +153,7 @@ def load_and_standardize_db():
 
 df_db = load_and_standardize_db()
 
-# 🚨 [새로운 아키텍처] 1. 기존 검사 기록(History)을 모두 화면 상단에 반복해서 출력
+# 기존 검사 기록(History)을 모두 화면 상단에 반복해서 출력
 for idx, data in enumerate(st.session_state["history"]):
     st.markdown("---")
     st.markdown(f"## 📦 [검사 기록 #{idx+1}] {data['product_name'] if data['product_name'] != '확인 불가' else '미상 물품'}")
@@ -351,11 +351,10 @@ for idx, data in enumerate(st.session_state["history"]):
             st.info("❌ **DB에 등록된 원본 사진이 없습니다.**")
 
 
-# 🚨 [새로운 아키텍처] 2. 맨 하단에 다음 물품을 위한 상시 업로드 창 배치
+# 🚨 [디자인 수정] 거창한 제목을 없애고 자연스럽게 선만 그어 다음 업로드 창으로 연결되도록 처리
 st.markdown("---")
-st.markdown("## 🆕 새로운 물품 검사 등록")
 
-# 메모리가 가득 찰 경우를 대비한 기록 삭제 버튼 추가
+# 메모리가 가득 찰 경우를 대비한 기록 삭제 버튼 추가 (이전 기록이 있을 때만 노출)
 if st.session_state["history"]:
     if st.button("🗑️ 모든 검사 기록 삭제 (메모리 정리)", use_container_width=True):
         st.session_state["history"] = []
@@ -408,7 +407,6 @@ if uploaded_files:
                 model = genai.GenerativeModel(model_name="gemini-3.5-flash")
                 response = model.generate_content(contents=ai_contents, generation_config={"response_mime_type": "application/json"})
                 
-                # 마크다운 백틱 치환 안정성 추가
                 clean_json_str = response.text.replace('```json', '').replace('```', '')
                 ocr_result = json.loads(clean_json_str)
                 
