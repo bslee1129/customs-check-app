@@ -5,6 +5,10 @@ import google.generativeai as genai
 from PIL import Image
 import requests
 import io
+import urllib3
+
+# 🚨 [중요] 정부 서버 SSL 인증서 미인증 경고 문구가 화면에 도배되는 것을 방지
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # [설정] 웹 페이지 제목 및 모바일 최적화 레이아웃
 st.set_page_config(page_title="해외 특송 위해물품 판정 시스템", layout="centered")
@@ -144,17 +148,15 @@ if uploaded_file is not None:
         st.write(f"• **통관 보류 사유:** {get_clean_db_value(matched_row, '통관보류사유내용')}")
         st.write(f"• **법적 관련 근거:** {get_clean_db_value(matched_row, '관련근거')}")
         
-        # 🚨 [수정 및 대폭 보완] 4. 복수 이미지 전수 출력 레이아웃
+        # 4. 복수 이미지 전수 출력 레이아웃 (정부 보안 서버 차단 우회 버전)
         url_data = str(matched_row.get('원본이미지URL', ''))
         if url_data and url_data.lower() != 'nan':
             st.markdown("---")
             st.markdown("### 🔍 [현장 교차 검증] 사진 비교 대조")
-            st.caption("좌측의 촬영한 현품과 우측의 DB 등록 원본 사진들을 대조하십시오. (여러 장의 사진이 모두 표시됩니다.)")
+            st.caption("좌측의 촬영한 현품과 우측의 DB 등록 원본 사진들을 대조하십시오.")
             
-            # URL 문자열을 쉼표 기준으로 쪼개고 공백을 제거하여 순수한 URL 리스트 생성
             urls = [u.strip() for u in url_data.split(',')]
             
-            # 화면을 왼쪽(현품)과 오른쪽(DB 원본 공간) 5:5 비율로 분리
             main_col1, main_col2 = st.columns(2)
             
             with main_col1:
@@ -164,27 +166,42 @@ if uploaded_file is not None:
             with main_col2:
                 st.warning("🔗 DB 등록 원본 이미지")
                 
-                # 🚨 핵심 변경: 가로로 쪼개지 않고 세로 루프를 돌려 모든 이미지가 누락 없이 시원하게 다 나오도록 처리
                 for idx, url in enumerate(urls):
                     if not url:
                         continue
-                    try:
-                        # 정부 기관 서버 보안 방화벽 차단 우회용 헤더 세팅
-                        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-                        img_response = requests.get(url, headers=headers, timeout=10)
-                        
-                        if img_response.status_code == 200:
-                            db_img = Image.open(io.BytesIO(img_response.content))
-                            # 각 이미지를 온전한 크기로 출력
-                            st.image(db_img, caption=f"DB 사진 {idx+1} / 총 {len(urls)}장", use_container_width=True)
+                    
+                    success = False
+                    error_msg = ""
+                    
+                    # 🚨 [핵심 우회] 정부 서버 일시적 거부를 뚫기 위해 2회 재시도(Retry) 체계 작동
+                    for attempt in range(2):
+                        try:
+                            # 브라우저인 척 속이는 정밀 헤더 구성
+                            headers = {
+                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                                "Accept-Language": "ko-KR,ko;q=0.9"
+                            }
+                            # verify=False로 외부 클라우드 접근 시 보안인증서 튕겨내는 현상 원천 차단, 대기시간 15초 연장
+                            img_response = requests.get(url, headers=headers, timeout=15, verify=False)
                             
-                            # 이미지와 이미지 사이에 얇은 분리선 및 여백 추가
-                            if idx < len(urls) - 1:
-                                st.markdown("<hr style='margin: 10px 0; border-top: 1px dashed #ccc;'>", unsafe_allow_html=True)
-                        else:
-                            st.caption(f"❌ DB 사진 {idx+1}: 접속 불가 (코드: {img_response.status_code})")
-                    except Exception as img_err:
-                        st.caption(f"❌ DB 사진 {idx+1}: 주소 연결 실패")
+                            if img_response.status_code == 200:
+                                db_img = Image.open(io.BytesIO(img_response.content))
+                                st.image(db_img, caption=f"DB 사진 {idx+1} / 총 {len(urls)}장", use_container_width=True)
+                                success = True
+                                break  # 다운로드 성공 시 재시도 루프 탈출
+                            else:
+                                error_msg = f"정부서버 응답 거부 (코드: {img_response.status_code})"
+                        except Exception as e:
+                            # 에러가 발생하면 어떤 에러인지 추적할 수 있도록 예외 클래스명 표기
+                            error_msg = f"보안망 연결 실패 ({type(e).__name__})"
+                    
+                    # 최종 실패 시에만 에러 출력
+                    if not success:
+                        st.caption(f"❌ DB 사진 {idx+1}: {error_msg}")
+                        
+                    if idx < len(urls) - 1 and success:
+                        st.markdown("<hr style='margin: 10px 0; border-top: 1px dashed #ccc;'>", unsafe_allow_html=True)
 
         st.warning(f"**검사원 조치 의견:**\n"
                    f"본 물품은 [불법의약품DB.xlsx] 대조 원칙 및 파이썬 정규화 매칭 결과, 등록번호 [{reg_num}]번에 "
