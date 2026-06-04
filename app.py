@@ -12,8 +12,8 @@ import re
 # [보안] 정부 서버 SSL 인증서 미인증 경고 문구 출력 방지
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# [설정] 웹 페이지 제목 및 모바일 레이아웃 최적화
-st.set_page_config(page_title="해외 특송 위해물품 판정 시스템", layout="centered")
+# 🚨 [수정 사항 1] 웹 페이지 탭 제목 변경
+st.set_page_config(page_title="AI 위해식품 스마트 검사관", layout="centered")
 
 # 모바일 UI 가속 및 가독성 향상을 위한 CSS 주입
 st.markdown("""
@@ -42,9 +42,12 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📱 현장 검사용 위해물품 스마트 판정기")
-st.caption("💡 대량의 성분도 모바일 화면에 맞춰 한눈에 요약하는 콤팩트 그리드 엔진입니다.")
+# 🚨 [수정 사항 2] 관세청 공식 로고 이미지 삽입 및 메인 타이틀 변경
+st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/Korea_Customs_Service_logo_%28ko%29.svg/512px-Korea_Customs_Service_logo_%28ko%29.svg.png", width=180)
+st.title("🛡️ AI 위해식품 스마트 검사관")
+st.caption("💡 스마트폰 촬영본을 바탕으로 DB 5단계 대조 및 성분 교차 검증을 수행합니다.")
 
+# API 키 설정
 gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 if gemini_key:
     genai.configure(api_key=gemini_key)
@@ -57,7 +60,7 @@ if "uploader_id" not in st.session_state:
 if "start_analysis" not in st.session_state:
     st.session_state["start_analysis"] = False
 
-# [대조원칙 조항] 제품명 정규화 처리 함수 (노이즈 제외 및 기호 제거)
+# [대조원칙] 제품명 정규화 처리 함수 (노이즈 제외 및 기호 제거)
 def normalize_product_name(text):
     if pd.isna(text) or not str(text).strip() or str(text).strip().lower() == 'nan':
         return ""
@@ -72,7 +75,7 @@ def normalize_product_name(text):
     val = re.sub(r'[\s\-\./\s:\(\)\+·_\*&%!@#~`=\[\]\{\}\\\|\'\";\?]', '', val)
     return val
 
-# [대조원칙 조항] 성분명 분리 기준 기호 기반 토큰화 및 정규화 함수
+# [대조원칙] 성분명 분리 기준 기호 기반 토큰화 및 정규화 함수
 def tokenize_text(text):
     if pd.isna(text) or not str(text).strip() or str(text).strip().lower() == 'nan':
         return []
@@ -123,6 +126,7 @@ def load_and_standardize_db():
 
 df_db = load_and_standardize_db()
 
+# 모바일 카메라/갤러리 다중 파일 업로더
 uploaded_files = st.file_uploader(
     "눌러서 카메라 촬영 또는 사진 선택", 
     type=["jpg", "jpeg", "png"],
@@ -138,6 +142,7 @@ if uploaded_files:
             st.session_state["start_analysis"] = True
             st.rerun()
 
+# 분석 연산 시동
 if uploaded_files and st.session_state["start_analysis"]:
     
     ai_contents = []
@@ -219,12 +224,14 @@ if uploaded_files and st.session_state["start_analysis"]:
             user_ingredient_tokens.extend(tokenize_text(ing.get('raw_name', '')))
             user_ingredient_tokens.extend(tokenize_text(ing.get('ko_name', '')))
             
+        # --- [1순위] 바코드 일치 판정 ---
         if norm_user_barcode and 'norm_barcode' in df_db.columns:
             b_match = df_db[df_db['norm_barcode'] == norm_user_barcode]
             if not b_match.empty:
                 matched_row = b_match.iloc[0]
                 match_type = "1순위 바코드 일치"
 
+        # --- [2순위/3순위] 제품명 다국어 정규화 일치 판정 ---
         if matched_row is None and user_norm_candidates and 'norm_product' in df_db.columns:
             for idx_row, row in df_db.iterrows():
                 db_norm = str(row['norm_product'])
@@ -233,6 +240,7 @@ if uploaded_files and st.session_state["start_analysis"]:
                     match_type = "2/3순위 제품명 다국어 정규화 일치"
                     break
 
+        # --- [우선순위 확장] 유사도 기반 다국어 애매한 매칭 감지 ---
         if matched_row is None and '제품명' in df_db.columns:
             for idx_row, row in df_db.iterrows():
                 db_raw = str(row['제품명']).lower()
@@ -242,6 +250,7 @@ if uploaded_files and st.session_state["start_analysis"]:
                     match_type = "다국어 유사 판단"
                     break
 
+        # --- [4순위] 성분명 토큰화 대조 ---
         if matched_row is None and user_ingredient_tokens and '성분명' in df_db.columns:
             for idx_row, row in df_db.iterrows():
                 db_ing_tokens = tokenize_text(row['성분명'])
@@ -253,6 +262,7 @@ if uploaded_files and st.session_state["start_analysis"]:
                     match_type = "4순위 성분명 토큰 일치"
                     break
 
+        # --- [5순위] 상세내용/근거 매칭 ---
         if matched_row is None:
             for idx_row, row in df_db.iterrows():
                 detail_str = str(row.get('상세내용', '')).lower() + str(row.get('관련근거', '')).lower() + str(row.get('통관보류사유내용', '')).lower()
@@ -261,6 +271,7 @@ if uploaded_files and st.session_state["start_analysis"]:
                     match_type = "5순위 상세 기재내역 매칭"
                     break
 
+    # 현장 조치 가이드 상황별 분기 정의
     decision_situation = "승인"
     is_high_risk_ingredient = False
     
@@ -304,12 +315,12 @@ if uploaded_files and st.session_state["start_analysis"]:
     col1, col2 = st.columns(2)
     with col1:
         st.markdown(f"""
-**1. OCR 분석 정보 (사진 {len(uploaded_files)}장 취합 결과)**
-* 식별된 브랜드: <span style="background-color: #e7f5ff; color: #007bff; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{brand}</span>
-* 식별된 제품명: <span style="background-color: #fff0f6; color: #d6336c; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{product_name}</span>
-* 식별된 번역명: <span style="background-color: #faf0f6; color: #ae3ec9; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{translated_product_name if translated_product_name else '해당없음'}</span>
-* 식별된 바코드: <span style="background-color: #f1f3f5; color: #495057; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{barcode}</span>
-""", unsafe_allow_html=True)
+        **1. OCR 분석 정보 (사진 {len(uploaded_files)}장 취합 결과)**
+        * 식별된 브랜드: <span style="background-color: #e7f5ff; color: #007bff; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{brand}</span>
+        * 식별된 제품명: <span style="background-color: #fff0f6; color: #d6336c; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{product_name}</span>
+        * 식별된 번역명: <span style="background-color: #faf0f6; color: #ae3ec9; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{translated_product_name if translated_product_name else '해당없음'}</span>
+        * 식별된 바코드: <span style="background-color: #f1f3f5; color: #495057; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{barcode}</span>
+        """, unsafe_allow_html=True)
     with col2:
         if matched_row is not None and '등록번호' in matched_row and pd.notna(matched_row['등록번호']):
             reg_num = str(matched_row['등록번호']).split('.')[0]
@@ -321,13 +332,14 @@ if uploaded_files and st.session_state["start_analysis"]:
         if decision_situation == "제한B": display_match_text = "⚠️ 현품 정보 식별 불가"
             
         st.markdown(f"""
-**2. DB 대조 결과**
-* 등록번호: <span style="background-color: #e8f7ff; color: #1c7ed6; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{reg_num}</span>
-* DB 매칭 상태: <span style="{match_badge}">{display_match_text}</span>
-""", unsafe_allow_html=True)
+        **2. DB 대조 결과**
+        * 등록번호: <span style="background-color: #e8f7ff; color: #1c7ed6; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{reg_num}</span>
+        * DB 매칭 상태: <span style="{match_badge}">{display_match_text}</span>
+        """, unsafe_allow_html=True)
 
     if translated_ingredients:
         st.markdown("---")
+        
         suspicious_count = sum(1 for ing in translated_ingredients if any(kw in str(ing.get('remark', '')).lower() for kw in ['위해', '의심', 'danger']))
         expander_title = f"🧪 [성분 번역 결과] 총 {len(translated_ingredients)}개 성분 검출"
         if suspicious_count > 0:
@@ -341,6 +353,7 @@ if uploaded_files and st.session_state["start_analysis"]:
                 raw = ing.get('raw_name', '확인 불가')
                 ko = ing.get('ko_name', '확인 불가')
                 rem = ing.get('remark', '').strip()
+                
                 if not rem or rem.lower() == 'nan':
                     rem = '일반명'
                 
@@ -395,7 +408,7 @@ if uploaded_files and st.session_state["start_analysis"]:
     
     if decision_situation == "금지":
         st.markdown(f"""
-### ■ 판정이 [🔴 금지]인 경우 조치 지침
+### ■ 판정이 [🔴 금지]인 경우 조치 지침:
 
 **1. 통관 보류 및 유치**
 - 사진 속 제품명, 바코드, 등록번호, 성분명 중 하나가 [불법의약품DB.xlsx]의 금지 정보와 명확히 일치하는 경우 통관을 허용하지 않는다.
@@ -430,7 +443,7 @@ if uploaded_files and st.session_state["start_analysis"]:
             st.warning("⚠️ **제품명/바코드는 DB와 일치하지 않으나, 성분표 내 성분명이 DB의 위해 성분명과 일치하므로 검토 및 정밀검사가 필요합니다.**")
             
         st.markdown(f"""
-### ■ 판정이 [⚠️ 제한 - 성분 기반 검토 및 정밀검사 필요]인 경우 조치 지침
+### ■ 판정이 [⚠️ 제한 - 성분 기반 검토 및 정밀검사 필요]인 경우 조치 지침:
 
 **1. 즉시 승인 금지**
 - 제품명 또는 바코드가 DB와 일치하지 않더라도, 성분표에서 추출한 원문 성분명 또는 한글 번역 성분명이 DB의 성분명과 일치하면 즉시 승인하지 않는다.
@@ -454,7 +467,7 @@ if uploaded_files and st.session_state["start_analysis"]:
         
     elif decision_situation == "제한B":
         st.markdown(f"""
-### ■ 판정이 [⚠️ 제한 - 현품 식별 불가 / 정보 보완 필요]인 경우 조치 지침
+### ■ 판정이 [⚠️ 제한 - 현품 식별 불가 / 정보 보완 필요]인 경우 조치 지침:
 
 **1. 통관 판단 보류**
 - 이미지가 흐리거나 잘려 제품명, 성분표, 바코드를 확인할 수 없는 경우 승인 또는 금지를 단정하지 않는다.
@@ -473,7 +486,7 @@ if uploaded_files and st.session_state["start_analysis"]:
         
     elif decision_situation == "승인":
         st.markdown(f"""
-### ■ 판정이 [🟢 승인]인 경우 조치 지침
+### ■ 판정이 [🟢 승인]인 경우 조치 지침:
 
 **1. DB 대조 결과 확인**
 - 바코드, 제품명, 다국어 변환 제품명, 원문 성분명, 한글 번역 성분명이 [불법의약품DB.xlsx]와 일치하지 않는 경우에만 승인으로 표시한다.
@@ -496,7 +509,7 @@ if uploaded_files and st.session_state["start_analysis"]:
 - 실제 통관 허용 여부는 현장 세관공무원의 최종 확인, 수량 기준, 자가사용 여부, 관계 법령 요건 확인 결과에 따른다.
 """)
 
-    # 🚨 [사진 렌더링 예외 처리 강제 삽입] DB 이미지 여부 판별 블록 분리
+    # 4. 이미지 세로 레이아웃 가로 병렬 배치 섹션 (DB 사진 공백 처리 포함)
     if matched_row is not None and decision_situation != "제한B":
         st.markdown("---")
         st.markdown("### 🔍 [현장 교차 검증] 사진 비교 대조")
@@ -512,7 +525,6 @@ if uploaded_files and st.session_state["start_analysis"]:
         st.warning("🔗 DB 등록 원본 이미지")
         
         url_data = str(matched_row.get('원본이미지URL', ''))
-        # DB에 URL 데이터가 정상적으로 존재하는 경우만 이미지 파싱 
         if url_data and url_data.lower() != 'nan' and url_data.strip():
             urls = [u.strip() for u in url_data.split(',') if u.strip()]
             db_cols = st.columns(len(urls))
@@ -545,13 +557,16 @@ if uploaded_files and st.session_state["start_analysis"]:
                     if not success:
                         with db_cols[idx]:
                             st.caption(f"❌ 사진 {idx+1}: {error_msg}")
-        # 🚨 URL 정보가 없을 때 안내 문구 대체 표출
         else:
             st.info("❌ **DB에 등록된 원본 사진이 없습니다.** (상단의 텍스트 및 성분 정보로 현품과 교차 대조를 진행해 주십시오.)")
 
-    # [다음 물품 판정 버튼]
+    # [다음 물품 판정 버튼 - 메모리 누수 방지 엔진 탑재]
     st.markdown("---")
     if st.button("🔄 다음 물품 판정하기 (화면 초기화)", use_container_width=True, type="primary"):
+        for key in list(st.session_state.keys()):
+            if key.startswith("cam_uploader_"):
+                del st.session_state[key]
+                
         st.session_state["uploader_id"] += 1
         st.session_state["start_analysis"] = False
         st.rerun()
