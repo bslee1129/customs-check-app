@@ -395,7 +395,7 @@ if uploaded_files and st.session_state["start_analysis"]:
     
     if decision_situation == "금지":
         st.markdown(f"""
-### ■ 판정이 [🔴 금지]인 경우 조치 지침:
+### ■ 판정이 [🔴 금지]인 경우 조치 지침
 
 **1. 통관 보류 및 유치**
 - 사진 속 제품명, 바코드, 등록번호, 성분명 중 하나가 [불법의약품DB.xlsx]의 금지 정보와 명확히 일치하는 경우 통관을 허용하지 않는다.
@@ -430,7 +430,7 @@ if uploaded_files and st.session_state["start_analysis"]:
             st.warning("⚠️ **제품명/바코드는 DB와 일치하지 않으나, 성분표 내 성분명이 DB의 위해 성분명과 일치하므로 검토 및 정밀검사가 필요합니다.**")
             
         st.markdown(f"""
-### ■ 판정이 [⚠️ 제한 - 성분 기반 검토 및 정밀검사 필요]인 경우 조치 지침:
+### ■ 판정이 [⚠️ 제한 - 성분 기반 검토 및 정밀검사 필요]인 경우 조치 지침
 
 **1. 즉시 승인 금지**
 - 제품명 또는 바코드가 DB와 일치하지 않더라도, 성분표에서 추출한 원문 성분명 또는 한글 번역 성분명이 DB의 성분명과 일치하면 즉시 승인하지 않는다.
@@ -454,7 +454,7 @@ if uploaded_files and st.session_state["start_analysis"]:
         
     elif decision_situation == "제한B":
         st.markdown(f"""
-### ■ 판정이 [⚠️ 제한 - 현품 식별 불가 / 정보 보완 필요]인 경우 조치 지침:
+### ■ 판정이 [⚠️ 제한 - 현품 식별 불가 / 정보 보완 필요]인 경우 조치 지침
 
 **1. 통관 판단 보류**
 - 이미지가 흐리거나 잘려 제품명, 성분표, 바코드를 확인할 수 없는 경우 승인 또는 금지를 단정하지 않는다.
@@ -473,7 +473,7 @@ if uploaded_files and st.session_state["start_analysis"]:
         
     elif decision_situation == "승인":
         st.markdown(f"""
-### ■ 판정이 [🟢 승인]인 경우 조치 지침:
+### ■ 판정이 [🟢 승인]인 경우 조치 지침
 
 **1. DB 대조 결과 확인**
 - 바코드, 제품명, 다국어 변환 제품명, 원문 성분명, 한글 번역 성분명이 [불법의약품DB.xlsx]와 일치하지 않는 경우에만 승인으로 표시한다.
