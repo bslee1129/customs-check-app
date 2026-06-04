@@ -84,8 +84,8 @@ def normalize_product_name(text):
     if pd.isna(text) or not str(text).strip() or str(text).strip().lower() == 'nan':
         return ""
     val = str(text).lower()
+    # 맛이나 향을 무조건 삭제하지 않도록 일부 노이즈 패턴 축소 (EVP 3D Sour Candy 보존 목적)
     noise_patterns = [
-        r'fruit\s*punch', r'blue\s*raz', r'sour\s*candy',
         r'\d+g', r'\d+\.?\d*oz', r'\d+\s*capsules', r'\d+\s*tablets', r'\d+\s*servings',
         r'capsules', r'tablets', r'powder', r'錠', r'カプセル', r'顆粒', r'液', r'정제', r'캡슐', r'과립', r'액제'
     ]
@@ -153,12 +153,11 @@ def load_and_standardize_db():
 
 df_db = load_and_standardize_db()
 
-# 기존 검사 기록(History)을 모두 화면 상단에 반복해서 출력
+# 기존 검사 기록(History) 출력 섹션
 for idx, data in enumerate(st.session_state["history"]):
     st.markdown("---")
     st.markdown(f"## 📦 [검사 기록 #{idx+1}] {data['product_name'] if data['product_name'] != '확인 불가' else '미상 물품'}")
     
-    # 데이터 추출
     user_images = data["user_images"]
     brand = data["brand"]
     product_name = data["product_name"]
@@ -268,7 +267,6 @@ for idx, data in enumerate(st.session_state["history"]):
     st.markdown("---")
     st.markdown("## 📋 현장 조치 가이드")
     
-    # 🚨 마크다운 들여쓰기 강제 제거 (글자 깨짐 및 코드블록 버그 완벽 수정)
     if decision_situation == "금지":
         st.markdown(f"""
 **1. 통관 보류 및 유치**
@@ -289,7 +287,6 @@ for idx, data in enumerate(st.session_state["history"]):
         st.markdown(f"""
 **1. 즉시 승인 금지**
 - 해당 물품은 “성분 기반 위해 가능성 확인 대상”으로 분류.
-
 **2. 분석의뢰 검토**
 - 성분 함유 여부가 불명확한 경우 전자통관시스템을 통한 분석의뢰 절차 검토.
 """, unsafe_allow_html=True)
@@ -297,7 +294,6 @@ for idx, data in enumerate(st.session_state["history"]):
         st.markdown(f"""
 **1. 통관 판단 보류 및 재촬영 요청**
 - 흐리거나 정보가 누락된 경우 승인을 단정하지 말고 보완 요청.
-
 **2. 수기 입력 대체**
 - 라벨 훼손 시 제품명, 바코드 등을 수기로 확인하여 대조.
 """, unsafe_allow_html=True)
@@ -305,7 +301,6 @@ for idx, data in enumerate(st.session_state["history"]):
         st.markdown(f"""
 **1. 수량 및 자가사용 기준 확인**
 - 건강기능식품 및 의약품 자가사용 목적 인정 범위(원칙적 6병 이내) 확인.
-
 **2. 최종 안내**
 - 본 판정은 보조 판단이며, 실제 통관 허용 여부는 현장 세관공무원의 요건 확인에 따름.
 """, unsafe_allow_html=True)
@@ -338,11 +333,8 @@ for idx, data in enumerate(st.session_state["history"]):
                             res = session.get(url, timeout=10)
                             if res.status_code == 200:
                                 db_img = Image.open(io.BytesIO(res.content))
-                                if user_images:
-                                    db_img.thumbnail(user_images[0].size)
-                                else:
-                                    db_img.thumbnail((800, 800))
-                                    
+                                if user_images: db_img.thumbnail(user_images[0].size)
+                                else: db_img.thumbnail((800, 800))
                                 with db_cols[idx_url]:
                                     st.image(db_img, use_container_width=True)
                                 success = True
@@ -360,12 +352,12 @@ for idx, data in enumerate(st.session_state["history"]):
             st.markdown("<hr style='margin: 25px 0; border-top: 2px solid #007bff;'>", unsafe_allow_html=True)
             st.info("❌ **DB에 등록된 원본 사진이 없습니다.**")
 
+
 # ------------------------------------------------------------
 # 🆕 새로운 업로드 창 (하단 배치)
 # ------------------------------------------------------------
 st.markdown("---")
 
-# 메모리가 가득 찰 경우를 대비한 기록 삭제 버튼
 if st.session_state["history"]:
     if st.button("🗑️ 모든 검사 기록 삭제 (메모리 정리)", use_container_width=True):
         st.session_state["history"] = []
@@ -387,15 +379,14 @@ if uploaded_files:
     st.info(f"📁 {len(uploaded_files)}장의 새 화물 사진이 접수되었습니다.")
     if st.button("🔍 위해물품 통합 분석 시작", type="primary", use_container_width=True):
         
-        # --- 🚨 [AI 프롬프트 강력 통제] 제품명 오독 원천 차단 ---
+        # 🚨 [AI 프롬프트 핵심 보강] 맛, 수식어를 포함한 전체 이름 강제 추출 지시
         ai_contents = []
         prompt = (
             "You are an expert Customs Forensic Intelligence OCR engine. Inspect the images carefully.\n"
-            "1. Extract ONLY the core, shortest possible product name (e.g., 'EVP 3D'). STRICTLY EXCLUDE marketing taglines (e.g., 'Stim-Free Elite Pump & Training Ignitor Powder'), flavors (e.g., 'Sour Candy'), and net weights from the 'product_name' field.\n"
-            "2. Single Ingredient Sheet Handling: Even if the image only shows the ingredient facts label without brand/product names or barcodes, DO NOT stop analysis. Extract everything possible.\n"
-            "3. Comprehensive Ingredient Extraction: Check zones like Active Ingredients, Other Ingredients, Supplement Facts, Drug Facts, Ingredients, Proprietary Blend, Performance Matrix, Complex, and Blend.\n"
-            "4. Multilingual Candidates Generation: Generate alternative matching names under 'multilingual_candidates' using romanization and dictionary expansions.\n"
-            "5. Categorize remarks strictly into: '위해성분 의심', '화학명', '식물명', '일반명', '기타 원료', '확인 불가'.\n\n"
+            "1. Extract ONLY the core, shortest possible product name (e.g., 'EVP 3D') into 'product_name'.\n"
+            "2. CRITICAL: Add the FULL product name including ALL flavors, taglines, and modifiers (e.g., 'EVP 3D Sour Candy', 'EVP 3D Tropic Thunder') into the 'multilingual_candidates' array. This is absolutely required for database matching.\n"
+            "3. Extract all ingredients comprehensively including sub-ingredients inside parentheses.\n"
+            "4. Categorize remarks strictly into: '위해성분 의심', '화학명', '식물명', '일반명', '기타 원료', '확인 불가'.\n\n"
             "Respond ONLY in a strict JSON format with these exact keys:\n"
             "{\n  'brand': 'string',\n  'product_name': 'string',\n  'translated_product_name': 'string',\n  'barcode': 'string',\n  'multilingual_candidates': ['string'],\n  'translated_ingredients': [ {'raw_name': 'string', 'ko_name': 'string', 'remark': 'string'} ],\n  'package_features': 'string'\n}"
         )
@@ -465,13 +456,16 @@ if uploaded_files:
                         match_type = "2/3순위 제품명 다국어 정규화 일치"
                         break
 
-            if matched_row is None and '제품명' in df_db.columns:
+            # 🚨 [부분 매칭 로직 고도화] DB의 정규화명(db_norm)과 유저의 제품명 간의 부분 포함 여부 교차 검증
+            if matched_row is None and 'norm_product' in df_db.columns:
                 for idx_row, row in df_db.iterrows():
-                    db_raw = str(row['제품명']).lower()
-                    if any(uc in db_raw and len(uc) >= 3 for uc in user_norm_candidates if uc):
+                    db_norm = str(row['norm_product'])
+                    if not db_norm: continue
+                    # 단어 길이가 4자 이상일 때만 부분 포함 허용 (오탐지 방지)
+                    if any(((uc in db_norm) or (db_norm in uc)) and len(uc) >= 4 for uc in user_norm_candidates if uc):
                         matched_row = row
                         is_ambiguous_multilingual = True
-                        match_type = "다국어 유사 판단"
+                        match_type = "제품명 파생/부분 포함 (맛, 제형 차이 의심)"
                         break
 
             if matched_row is None and user_ingredient_tokens and '성분명' in df_db.columns:
@@ -507,12 +501,11 @@ if uploaded_files:
             decision_situation = "제한B"
         elif matched_row is not None and (match_type in ["1순위 바코드 일치", "2/3순위 제품명 다국어 정규화 일치"] or is_high_risk_ingredient):
             decision_situation = "금지"
-        elif matched_row is not None and (is_ingredient_only_match or is_ambiguous_multilingual or match_type in ["5순위 상세 기재내역 매칭", "다국어 유사 판단"]):
+        elif matched_row is not None and (is_ingredient_only_match or is_ambiguous_multilingual or match_type in ["5순위 상세 기재내역 매칭", "제품명 파생/부분 포함 (맛, 제형 차이 의심)"]):
             decision_situation = "제한A"
         else:
             decision_situation = "승인"
 
-        # 연산된 결과들을 딕셔너리로 묶어 히스토리 배열에 누적
         report_data = {
             "user_images": user_images,
             "brand": brand,
@@ -530,6 +523,5 @@ if uploaded_files:
         
         st.session_state["history"].append(report_data)
         
-        # 파일 업로더 초기화 및 화면 새로고침
         st.session_state["uploader_id"] += 1
         st.rerun()
