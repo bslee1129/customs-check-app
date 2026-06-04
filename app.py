@@ -8,11 +8,12 @@ import io
 import urllib3
 import time
 import re
+import os
 
 # [보안] 정부 서버 SSL 인증서 미인증 경고 문구 출력 방지
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# 🚨 [수정 사항 1] 웹 페이지 탭 제목 변경
+# [설정] 웹 페이지 제목 및 모바일 레이아웃 최적화
 st.set_page_config(page_title="AI 위해식품 스마트 검사관", layout="centered")
 
 # 모바일 UI 가속 및 가독성 향상을 위한 CSS 주입
@@ -42,8 +43,14 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 🚨 [수정 사항 2] 관세청 공식 로고 이미지 삽입 및 메인 타이틀 변경
-st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/Korea_Customs_Service_logo_%28ko%29.svg/512px-Korea_Customs_Service_logo_%28ko%29.svg.png", width=180)
+# 🚨 [수정 사항] 깃허브 저장소 내의 관세청 공식 로고 파일 직접 참조
+logo_path = "Emblem_of_the_Korea_Customs_Service.svg.png"
+if os.path.exists(logo_path):
+    st.image(logo_path, width=180)
+else:
+    # 혹시 로컬 파일이 아직 동기화되지 않았을 경우를 대비한 깃허브 Raw 링크 안전장치
+    st.image("https://raw.githubusercontent.com/bslee1129/customs-check-app/main/Emblem_of_the_Korea_Customs_Service.svg.png", width=180)
+
 st.title("🛡️ AI 위해식품 스마트 검사관")
 st.caption("💡 스마트폰 촬영본을 바탕으로 DB 5단계 대조 및 성분 교차 검증을 수행합니다.")
 
