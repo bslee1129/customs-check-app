@@ -10,22 +10,41 @@ import urllib3
 # [보안] 정부 서버 SSL 인증서 미인증 경고 문구 출력 방지
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# [설정] 웹 페이지 제목 및 모바일(화면 꽉 차게) 최적화 레이아웃
+# [설정] 웹 페이지 제목 및 모바일 레이아웃 최적화
 st.set_page_config(page_title="해외 특송 위해물품 판정 시스템", layout="centered")
 
-st.title("📱 현장 검사용 위해물품 스마트 판정기")
+# 🚨 [모바일 전용 화면 구성] 스마트폰 터치 및 가독성 향상을 위한 강력한 CSS 주입
 st.markdown("""
     <style>
-    /* 모바일 환경에서 버튼과 텍스트가 더 크게 보이도록 UI 조정 */
+    /* 1. 파일 업로드 박스 전체를 모바일 터치에 맞게 대형화 */
+    .stFileUploader {
+        padding: 10px;
+        background-color: #f8f9fa;
+        border-radius: 12px;
+        border: 2px dashed #007bff;
+    }
+    /* 2. 업로드 버튼 자체를 큼직하게 변경 */
+    div[data-testid="stFileUploaderDropzone"] button {
+        width: 100% !important;
+        height: 60px !important;
+        font-size: 18px !important;
+        font-weight: bold !important;
+        background-color: #007bff !important;
+        color: white !important;
+        border-radius: 8px !important;
+    }
+    /* 3. 하단 다음 물품 판정 버튼 대형화 */
     .stButton>button {
         width: 100%;
-        height: 50px;
+        height: 55px;
         font-size: 18px !important;
+        font-weight: bold !important;
     }
     </style>
 """, unsafe_allow_html=True)
 
-st.caption("💡 스마트폰에서 아래 버튼을 누르면 **[사진 찍기]** 카메라가 즉시 실행됩니다.")
+st.title("📱 현장 검사용 위해물품 스마트 판정기")
+st.caption("💡 스마트폰에서 아래 파란색 버튼을 누르면 **[카메라 촬영]** 또는 **[갤러리 선택]** 팝업이 즉시 실행됩니다.")
 
 # 사진 업로더를 초기화하기 위한 고유 키 상태 관리
 if "uploader_id" not in st.session_state:
@@ -58,26 +77,24 @@ def load_db():
 
 df_db = load_db()
 
-# 🚨 [모바일 최적화 가이드] 다중 파일 업로더 생성
-# 스마트폰에서 터치 시 카메라 촬영 및 갤러리 다중 선택이 자동으로 활성화됩니다.
+# 🚨 [모바일 카메라/갤러리 복수 선택 연동 컴포넌트]
 uploaded_files = st.file_uploader(
-    "📸 [터치하여 카메라 촬영] 전면/후면/성분표 사진을 차례로 찍어 올려주세요", 
+    "눌러서 카메라 촬영 또는 사진 선택", 
     type=["jpg", "jpeg", "png"],
     accept_multiple_files=True,
-    key=f"cam_uploader_{st.session_state['uploader_id']}"
+    key=f"cam_uploader_{st.session_state['uploader_id']}",
+    label_visibility="collapsed" # 디자인을 위해 텍스트는 숨기고 버튼만 강조
 )
 
-# 여러 장의 사진이 업로드되었을 때 작동
+# 스마트폰에서 사진이 정상적으로 접수되었을 때 작동
 if uploaded_files:
-    st.success(f"총 {len(uploaded_files)}장의 사진이 성공적으로 접수되었습니다. [1개의 물품]으로 통합 분석합니다.")
+    st.success(f"총 {len(uploaded_files)}장의 현품 사진이 접수되었습니다. [1개의 물품]으로 통합 판정을 시작합니다.")
     
-    # 1. 화면에 업로드된 현품 이미지들을 가로로 나란히 출력하여 확인
+    # 1. 촬영된 현품 이미지 목록 가로 정렬 출력
     st.markdown("### 📸 촬영된 현품 이미지 목록")
     img_display_cols = st.columns(len(uploaded_files))
     
-    # AI에게 보낼 통합 콘텐츠 리스트 생성 (프롬프트 + 이미지들)
     ai_contents = []
-    
     prompt = (
         "Analyze ALL the provided images together as a single product. "
         "Extract product information by combining context from all images (e.g., one image shows the front label, another shows the ingredients list). "
@@ -89,21 +106,19 @@ if uploaded_files:
     for idx, uploaded_file in enumerate(uploaded_files):
         src_image = Image.open(uploaded_file)
         
-        # 모바일 화면 가독성 표시
         with img_display_cols[idx]:
             st.image(src_image, caption=f"촬영 사진 {idx+1}", use_container_width=True)
             
-        # 🚨 [모바일 데이터 절약 및 통신 속도 업그레이드] 
-        # 스마트폰 원본 사진(화질이 너무 큼)을 1024px로 리사이징하여 구글 무료 서버 한도(429) 및 버퍼링 완벽 차단
+        # 모바일 원본 사진 대용량 압축 처리 (구글 429 에러 방지)
         img_for_ai = src_image.copy()
         img_for_ai.thumbnail((1024, 1024))
         ai_contents.append(img_for_ai)
 
     brand, product_name, barcode, ingredients = '확인 불가', '확인 불가', '바코드 확인 불가', []
     
-    # 단 한 번만 최신 AI를 호출하여 모든 사진을 한꺼번에 분석 시킴
-    with st.spinner("구글 Gemini 비전 엔진이 촬영된 모든 사진을 분석 중입니다..."):
+    with st.spinner("구글 Gemini 최신 비전 엔진이 촬영본을 통합 분석 중입니다..."):
         try:
+            # 2026년 공식 현역 표준 모델 매핑
             model = genai.GenerativeModel(model_name="gemini-3.5-flash")
             
             response = model.generate_content(
@@ -120,7 +135,7 @@ if uploaded_files:
         except Exception as e:
             st.error(f"비전 엔진 통합 판독 중 예외 발생: {e}")
 
-    # 2. 파이썬 Pandas 기반 100% 정밀 매칭 매커니즘 (취합된 결과로 딱 1번만 수행)
+    # 2. 파이썬 Pandas 기반 100% 정밀 매칭 매커니즘
     matched_row = None
     match_type = "🟢 매칭되지 않음"
     
@@ -143,7 +158,7 @@ if uploaded_files:
                         match_type = "🟡 성분명 일치 매칭됨"
                         break
 
-    # 3. 최종 세관 검사 판정 및 단 하나의 리포트 화면 렌더링
+    # 3. 최종 세관 검사 판정 및 리포트 화면 렌더링
     st.markdown("---")
     st.subheader("📋 세관 검사 판정 보고서 (통합 판정)")
     
@@ -228,4 +243,8 @@ if uploaded_files:
         st.write("• 특이사항: 데이터베이스 내 일치하는 위해 규제 이력이 존재하지 않습니다.")
         st.info("**검사원 조치 의견:** 금지 성분 및 DB 매칭 내역 없으므로 **통관 허용** 처리합니다.")
 
-    #
+    # [다음 물품 판정 버튼] 판정이 모두 끝난 뒤 완전히 초기화하고 대기 상태로 복귀
+    st.markdown("---")
+    if st.button("🔄 다음 물품 판정하기 (화면 초기화)", use_container_width=True, type="primary"):
+        st.session_state["uploader_id"] += 1
+        st.rerun()
