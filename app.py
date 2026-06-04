@@ -16,7 +16,7 @@ st.set_page_config(page_title="해외 특송 위해물품 판정 시스템", lay
 st.title("📱 현장 검사용 위해물품 스마트 판정기")
 st.caption("스마트폰 사진을 자동 압축하여 구글 무료 서버 한도 내에서 상시 무료로 구동합니다.")
 
-# 🚨 [연속 검사 핵심] 사진 업로더를 초기화하기 위한 고유 키(Key) 상태 관리
+# 사진 업로더를 초기화하기 위한 고유 키 상태 관리
 if "uploader_id" not in st.session_state:
     st.session_state["uploader_id"] = 0
 
@@ -47,7 +47,7 @@ def load_db():
 
 df_db = load_db()
 
-# 🚨 [연속 검사 핵심] key 값에 세션 번호를 부여하여 버튼 클릭 시 강제 리셋되도록 설정
+# 카메라 / 파일 업로드 컴포넌트
 uploaded_file = st.file_uploader(
     "📸 제품 전면 또는 성분표 사진을 촬영하세요", 
     type=["jpg", "jpeg", "png"],
@@ -56,21 +56,30 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
     src_image = Image.open(uploaded_file)
-    st.info("📸 내가 촬영한 현품 사진")
+    
+    # 🚨 [새로 추가된 포렌식 검증] 이미지 해상도 체크 정밀 로직
+    width, height = src_image.size
+    if width < 500 or height < 500:
+        st.warning(f"⚠️ **주의: 이미지 화질이 너무 낮습니다! ({width}x{height}px)**\n\n"
+                   f"인터넷에서 다운받은 작은 섬네일이거나 멀리서 찍은 사진일 수 있습니다. "
+                   f"AI가 글자를 판독하기 어려우니 **실물 제품 라벨을 스마트폰 카메라로 가까이서 선명하게 다시 촬영**해 주세요.")
+    
+    st.info("📸 업로드된 현품 이미지")
     st.image(src_image, use_container_width=True)
+    
+    brand, product_name, barcode, ingredients = '확인 불가', '확인 불가', '바코드 확인 불가', []
     
     with st.spinner("Gemini AI가 라벨을 판독하고 있습니다..."):
         try:
             img_for_ai = src_image.copy()
             img_for_ai.thumbnail((1024, 1024))
             
-            # 2026년 표준 현역 모델 적용
             model = genai.GenerativeModel(model_name="gemini-3.5-flash")
             
             prompt = (
                 "Analyze the image and extract product information. "
-                "Respond ONLY in JSON format with keys: 'brand', 'product_name', 'barcode', 'ingredients' (list of ingredients found in the text). "
-                "If not found, use empty string or empty list. Do not hypothesize or use external knowledge."
+                "Respond ONLY in JSON format with keys: 'brand', 'product_name', 'barcode', 'ingredients'. "
+                "If the image is too blurry or low resolution to read, return empty fields. Do not hallucinate."
             )
             
             response = model.generate_content(
@@ -85,14 +94,13 @@ if uploaded_file is not None:
             ingredients = ocr_result.get('ingredients', [])
             
         except Exception as e:
-            st.error(f"비전 엔진 판독 중 예외 발생: {e}")
-            brand, product_name, barcode, ingredients = '확인 불가', '확인 불가', '바코드 확인 불가', []
+            st.error("💡 AI가 이미지에서 텍스트를 추출하는 데 실패했습니다. 사진을 더 가까이서 선명하게 촬영해 주세요.")
 
     # 2. 파이썬 Pandas 기반 100% 정밀 매칭 매커니즘
     matched_row = None
     match_type = "🟢 매칭되지 않음"
     
-    if df_db is not None and product_name != '확인 불가':
+    if df_db is not None and product_name not in ['확인 불가', '']:
         query_text = product_name.replace(" ", "").lower()
         
         exact_match = df_db[df_db['search_product'].str.contains(query_text, na=False)]
@@ -151,7 +159,7 @@ if uploaded_file is not None:
         st.write(f"• **통관 보류 사유:** {get_clean_db_value(matched_row, '통관보류사유내용')}")
         st.write(f"• **법적 관련 근거:** {get_clean_db_value(matched_row, '관련근거')}")
         
-        # 4. 복수 이미지 전수 출력 레이아웃 (정부 보안 서버 차단 우회 버전)
+        # 4. 복수 이미지 전수 출력 레이아웃
         url_data = str(matched_row.get('원본이미지URL', ''))
         if url_data and url_data.lower() != 'nan':
             st.markdown("---")
@@ -159,13 +167,11 @@ if uploaded_file is not None:
             st.caption("우측에 표시되는 DB 등록 원본 사진들과 실물을 대조하십시오.")
             
             urls = [u.strip() for u in url_data.split(',')]
-            
             st.warning("🔗 DB 등록 원본 이미지")
             
             for idx, url in enumerate(urls):
                 if not url:
                     continue
-                
                 success = False
                 error_msg = ""
                 
@@ -173,11 +179,8 @@ if uploaded_file is not None:
                     try:
                         headers = {
                             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-                            "Accept-Language": "ko-KR,ko;q=0.9"
                         }
                         img_response = requests.get(url, headers=headers, timeout=15, verify=False)
-                        
                         if img_response.status_code == 200:
                             db_img = Image.open(io.BytesIO(img_response.content))
                             st.image(db_img, caption=f"DB 사진 {idx+1} / 총 {len(urls)}장", use_container_width=True)
@@ -190,7 +193,6 @@ if uploaded_file is not None:
                 
                 if not success:
                     st.caption(f"❌ DB 사진 {idx+1}: {error_msg}")
-                    
                 if idx < len(urls) - 1 and success:
                     st.markdown("<hr style='margin: 10px 0; border-top: 1px dashed #ccc;'>", unsafe_allow_html=True)
 
@@ -201,7 +203,6 @@ if uploaded_file is not None:
         st.write("• 특이사항: 데이터베이스 내 일치하는 위해 규제 이력이 존재하지 않습니다.")
         st.info("**검사원 조치 의견:** 금지 성분 및 DB 매칭 내역 없으므로 **통관 허용** 처리합니다.")
 
-    # 🚨 [연속 검사 핵심 버튼 클릭 이벤트]
     st.markdown("---")
     if st.button("🔄 다음 위해물품 연속 검사하기 (화면 초기화)", use_container_width=True, type="primary"):
         st.session_state["uploader_id"] += 1
