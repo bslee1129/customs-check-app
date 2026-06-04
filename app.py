@@ -85,7 +85,7 @@ uploaded_files = st.file_uploader(
     label_visibility="collapsed"
 )
 
-# 🚨 [수정 사항 1] 이미지를 올렸을 때는 대기 메시지와 분석 버튼만 표출 (목록 및 분석 보류)
+# 이미지를 올렸을 때는 대기 메시지와 분석 버튼만 표출 (화면 복잡도 최소화)
 if uploaded_files:
     if not st.session_state["start_analysis"]:
         st.info(f"📁 현재 {len(uploaded_files)}장의 사진이 업로드 대기 중입니다. 준비가 완료되면 아래 버튼을 눌러주세요.")
@@ -93,12 +93,8 @@ if uploaded_files:
             st.session_state["start_analysis"] = True
             st.rerun()
 
-# 🚨 [수정 사항 1] 분석 버튼을 누른 이후에만 목록 출력 및 AI 연산 전체 작동
+# 분석 버튼을 누른 이후에만 최종 판정문 및 이미지 대조 섹션 전체 작동
 if uploaded_files and st.session_state["start_analysis"]:
-    
-    # 1. 촬영된 현품 이미지 목록 출력
-    st.markdown("### 📸 촬영된 현품 이미지 목록")
-    img_display_cols = st.columns(len(uploaded_files))
     
     ai_contents = []
     prompt = (
@@ -109,12 +105,8 @@ if uploaded_files and st.session_state["start_analysis"]:
     )
     ai_contents.append(prompt)
     
-    for idx, uploaded_file in enumerate(uploaded_files):
+    for uploaded_file in uploaded_files:
         src_image = Image.open(uploaded_file)
-        
-        with img_display_cols[idx]:
-            st.image(src_image, caption=f"촬영 사진 {idx+1}", use_container_width=True)
-            
         # 이미지 압축 가공
         img_for_ai = src_image.copy()
         img_for_ai.thumbnail((1024, 1024))
@@ -157,9 +149,8 @@ if uploaded_files and st.session_state["start_analysis"]:
                         match_type = "🟡 성분명 일치 매칭됨"
                         break
 
-    # 3. 최종 세관 검사 판정 보고서 렌더링
-    st.markdown("---")
-    st.subheader("📋 세관 검사 판정 보고서 (통합 판정)")
+    # 3. 최종 세관 검사 판정 보고서 렌더링 (최상단 노출)
+    st.subheader("📋 세관 검사 판정 보고서")
     
     if matched_row is not None:
         final_decision = "🔴 반입 금지" if "🔴" in match_type else "🟡 제한 - 정밀검사 필요"
@@ -200,51 +191,53 @@ if uploaded_files and st.session_state["start_analysis"]:
         st.write(f"• **통관 보류 사유:** {get_clean_db_value(matched_row, '통관보류사유내용')}")
         st.write(f"• **법적 관련 근거:** {get_clean_db_value(matched_row, '관련근거')}")
         
-        # 4. 복수 이미지 전수 출력 레이아웃
+        # 🚨 [대폭 개편] 4. 복수 이미지 교차 전수 대조 레이아웃 (상/하 세로 스택 구조)
         url_data = str(matched_row.get('원본이미지URL', ''))
         if url_data and url_data.lower() != 'nan':
             st.markdown("---")
             st.markdown("### 🔍 [현장 교차 검증] 사진 비교 대조")
-            st.caption("우측에 표시되는 DB 등록 원본 사진들과 실물을 대조하십시오.")
+            st.caption("상단의 촬영 현품 사진들과 하단의 DB 등록 원본 사진들의 패키지를 대조하십시오.")
             
+            # [수정 사항 1 & 2] 상단: 내가 촬영한 현품 사진 섹션 (가로 병렬 축소 배치)
+            st.info("📸 내가 촬영한 현품 사진")
+            user_cols = st.columns(len(uploaded_files))
+            for u_idx, u_file in enumerate(uploaded_files):
+                with user_cols[u_idx]:
+                    st.image(Image.open(u_file), caption=f"촬영 사진 {u_idx+1}", use_container_width=True)
+            
+            # 상하 섹션 구분을 위한 명확한 선 표출 및 여백
+            st.markdown("<hr style='margin: 25px 0; border-top: 2px solid #007bff;'>", unsafe_allow_html=True)
+            
+            # [수정 사항 1 & 2] 하단: DB 등록 원본 이미지 섹션 (가로 병렬 축소 배치)
+            st.warning("🔗 DB 등록 원본 이미지")
             urls = [u.strip() for u in url_data.split(',') if u.strip()]
+            db_cols = st.columns(len(urls))
             
-            # 메인 분할 화면 (좌측: 내가 촬영한 첫 번째 대표 이미지 / 우측: DB 원본 이미지 공간)
-            main_col1, main_col2 = st.columns(2)
-            
-            with main_col1:
-                st.info("📸 내가 촬영한 현품 사진")
-                st.image(Image.open(uploaded_files[0]), use_container_width=True, caption="촬영본 (대표)")
+            for idx, url in enumerate(urls):
+                success = False
+                error_msg = ""
                 
-            with main_col2:
-                st.warning("🔗 DB 등록 원본 이미지")
+                for attempt in range(2):
+                    try:
+                        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+                        img_response = requests.get(url, headers=headers, timeout=15, verify=False)
+                        if img_response.status_code == 200:
+                            db_img = Image.open(io.BytesIO(img_response.content))
+                            # 병렬 칸 내부에 맞춤 축소 표출
+                            with db_cols[idx]:
+                                st.image(db_img, caption=f"DB 사진 {idx+1}", use_container_width=True)
+                            success = True
+                            break
+                        else:
+                            error_msg = f"서버 거부 ({img_response.status_code})"
+                    except Exception as e:
+                        error_msg = f"보안망 연결 실패"
                 
-                # 🚨 [수정 사항 2] DB 사진 개수만큼 우측 공간 내부를 쪼개서 병렬(가로) 배치 및 자동 축소 효과
-                db_cols = st.columns(len(urls))
-                
-                for idx, url in enumerate(urls):
-                    success = False
-                    error_msg = ""
-                    
-                    for attempt in range(2):
-                        try:
-                            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-                            img_response = requests.get(url, headers=headers, timeout=15, verify=False)
-                            if img_response.status_code == 200:
-                                db_img = Image.open(io.BytesIO(img_response.content))
-                                # 🚨 병렬로 생성된 칸 안에 축소하여 표출
-                                with db_cols[idx]:
-                                    st.image(db_img, caption=f"DB 사진 {idx+1}", use_container_width=True)
-                                success = True
-                                break
-                            else:
-                                error_msg = f"서버 거부 ({img_response.status_code})"
-                        except Exception as e:
-                            error_msg = f"보안망 연결 실패"
-                    
-                    if not success:
-                        with db_cols[idx]:
-                            st.caption(f"❌ 사진 {idx+1}: {error_msg}")
+                if not success:
+                    with db_cols[idx]:
+                        st.caption(f"❌ 사진 {idx+1}: {error_msg}")
+
+            st.markdown("---")
 
         st.warning(f"**검사원 조치 의견:**\n"
                    f"본 물품은 [불법의약품DB.xlsx] 대조 원칙 및 파이썬 정규화 매칭 결과, 등록번호 [{reg_num}]번에 "
@@ -253,7 +246,7 @@ if uploaded_files and st.session_state["start_analysis"]:
         st.write("• 특이사항: 데이터베이스 내 일치하는 위해 규제 이력이 존재하지 않습니다.")
         st.info("**검사원 조치 의견:** 금지 성분 및 DB 매칭 내역 없으므로 **통관 허용** 처리합니다.")
 
-    # [다음 물품 판정 버튼] 세션 분석 플래그까지 함께 리셋
+    # [다음 물품 판정 버튼]
     st.markdown("---")
     if st.button("🔄 다음 물품 판정하기 (화면 초기화)", use_container_width=True, type="primary"):
         st.session_state["uploader_id"] += 1
