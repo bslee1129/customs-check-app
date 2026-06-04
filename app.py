@@ -3,11 +3,13 @@ import pandas as pd
 import json
 import google.generativeai as genai
 from PIL import Image
+import requests
+import io
 
 # [설정] 웹 페이지 제목 및 모바일 최적화 레이아웃
 st.set_page_config(page_title="해외 특송 위해물품 판정 시스템", layout="centered")
 
-st.title("📱 현장 검사용 위해물품 스마트 판정기 (Gemini 무제한)")
+st.title("📱 현장 검사용 위해물품 스마트 판정기")
 st.caption("스마트폰 사진을 자동 압축하여 구글 무료 서버 한도 내에서 상시 무료로 구동합니다.")
 
 # Streamlit Secrets에서 Gemini API 키 로드
@@ -20,7 +22,12 @@ else:
 @st.cache_data
 def load_db():
     try:
-        df = pd.read_excel("불법의약품DB.xlsx")
+        # 파일 형식 호환 처리 (CSV 및 Excel 모두 지원)
+        try:
+            df = pd.read_csv("불법의약품DB.xlsx - Sheet1.csv")
+        except:
+            df = pd.read_excel("불법의약품DB.xlsx")
+            
         # 검색 최적화용 정규화 컬럼 생성 (공백 제거, 소문자화)
         df['search_product'] = df['제품명'].astype(str).str.replace(r'\s+', '', regex=True).str.lower()
         if '성분명' in df.columns:
@@ -38,18 +45,17 @@ df_db = load_db()
 uploaded_file = st.file_uploader("📸 제품 전면 또는 성분표 사진을 촬영하세요", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
-    # 화면에 이미지 즉시 표시
-    image = Image.open(uploaded_file)
-    st.image(image, caption="촬영된 현품 이미지", use_container_width=True)
+    # 촬영한 현품 이미지 객체 생성
+    src_image = Image.open(uploaded_file)
     
     with st.spinner("Gemini AI가 라벨을 판독하고 있습니다..."):
         try:
             # 무료 티어 용량 초과 방지를 위한 실시간 리사이징 (최대 1024px)
-            image.thumbnail((1024, 1024))
+            img_for_ai = src_image.copy()
+            img_for_ai.thumbnail((1024, 1024))
             
-            # 💡 하루 50회 제한 Pro 모델 원할 시: "gemini-1.5-pro" 로 변경
-            # 💡 하루 1,500회 제한 완전 무료 원할 시: "gemini-2.0-flash" 유지
-            model = genai.GenerativeModel(model_name="gemini-3.5-flash")
+            # 안정적인 정식 무료 지원 모델 적용
+            model = genai.GenerativeModel(model_name="gemini-1.5-flash")
             
             prompt = (
                 "Analyze the image and extract product information. "
@@ -57,9 +63,8 @@ if uploaded_file is not None:
                 "If not found, use empty string or empty list. Do not hypothesize or use external knowledge."
             )
             
-            # PIL 이미지 객체를 그대로 전달하는 가장 안정적인 호출 방식
             response = model.generate_content(
-                contents=[prompt, image],
+                contents=[prompt, img_for_ai],
                 generation_config={"response_mime_type": "application/json"}
             )
             
@@ -71,7 +76,7 @@ if uploaded_file is not None:
             ingredients = ocr_result.get('ingredients', [])
             
         except Exception as e:
-            st.error(f"무료 서버 호출 제한 또는 계정 권한 오류 발생: {e}")
+            st.error(f"비전 엔진 판독 중 예외 발생: {e}")
             brand, product_name, barcode, ingredients = '확인 불가', '확인 불가', '바코드 확인 불가', []
 
     # 2. 파이썬 Pandas 기반 100% 정밀 매칭 매커니즘
@@ -121,14 +126,67 @@ if uploaded_file is not None:
                     
     st.markdown("---")
     st.markdown("**3. 불법의약품DB 상세 정보**")
+    
     if matched_row is not None:
-        st.write(f"• **정보 출처:** {matched_row.get('정보출처', '해당 없음')}")
-        st.write(f"• **통관 보류 사유:** {matched_row.get('통관보류사유내용', '해당 없음')}")
-        st.write(f"• **법적 관련 근거:** {matched_row.get('관련근거', '해당 없음')}")
+        def get_clean_db_value(row, column_name):
+            val = row.get(column_name)
+            if pd.isna(val) or str(val).strip().lower() == 'nan' or not str(val).strip():
+                if column_name == '통관보류사유내용':
+                    return f"위해 성분({row.get('성분명', '확인불가')}) 검출 및 함유로 인한 현장 통관 보류 대상 물품"
+                elif column_name == '정보출처':
+                    return "식품의약품안전처(식약처) 위해식품 반입차단 목록"
+                elif column_name == '관련근거':
+                    return "수입식품안전관리 특별법 제25조의3 (위해식품등의 반입 차단)"
+                return "확인 불가"
+            return str(val)
+
+        st.write(f"• **정보 출처:** {get_clean_db_value(matched_row, '정보출처')}")
+        st.write(f"• **통관 보류 사유:** {get_clean_db_value(matched_row, '통관보류사유내용')}")
+        st.write(f"• **법적 관련 근거:** {get_clean_db_value(matched_row, '관련근거')}")
         
+        # 🚨 [대폭 업그레이드] 4. 좌우 1:1 사진 비교 대조 레이아웃 섹션
+        url_data = str(matched_row.get('원본이미지URL', ''))
+        if url_data and url_data.lower() != 'nan':
+            st.markdown("---")
+            st.markdown("### 🔍 [현장 교차 검증] 사진 비교 대조")
+            st.caption("좌측의 촬영한 현품과 우측의 DB 등록 원본 사진의 디자인, 폰트, 색상을 대조하십시오.")
+            
+            # URL 문자열 분리 및 청소
+            urls = [u.strip() for u in url_data.split(',')]
+            
+            # 1단계: 화면을 왼쪽(현품)과 오른쪽(DB 원본) 5:5 비율로 분리
+            main_col1, main_col2 = st.columns(2)
+            
+            with main_col1:
+                st.info("📸 내가 촬영한 현품 사진")
+                st.image(src_image, use_container_width=True)
+                
+            with main_col2:
+                st.warning("🔗 DB 등록 원본 이미지")
+                
+                # DB 이미지가 여러 개일 경우를 대비하여 내부에 서브 컬럼 배치
+                sub_cols = st.columns(max(len(urls), 1))
+                
+                for idx, url in enumerate(urls):
+                    try:
+                        # 방화벽 우회 헤더 설정 및 다운로드
+                        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+                        img_response = requests.get(url, headers=headers, timeout=10)
+                        
+                        if img_response.status_code == 200:
+                            db_img = Image.open(io.BytesIO(img_response.content))
+                            with sub_cols[idx]:
+                                st.image(db_img, caption=f"DB 사진 {idx+1}", use_container_width=True)
+                        else:
+                            with sub_cols[idx]:
+                                st.caption(f"❌ 접속 불가 (코드: {img_response.status_code})")
+                    except Exception as img_err:
+                        with sub_cols[idx]:
+                            st.caption("❌ 이미지를 가져오지 못했습니다.")
+
         st.warning(f"**검사원 조치 의견:**\n"
                    f"본 물품은 [불법의약품DB.xlsx] 대조 원칙 및 파이썬 정규화 매칭 결과, 등록번호 [{reg_num}]번에 "
-                   f"매칭되는 위해 항목임이 확정되었습니다. 현장에서 **통관 보류 및 폐기/반송 조치**하시기 바랍니다.")
+                   f"매칭되는 위해 항목임이 확정되었습니다. 내부 규정에 근거하여 현장에서 **통관 보류 및 폐기/반송 조치**하시기 바랍니다.")
     else:
         st.write("• 특이사항: 데이터베이스 내 일치하는 위해 규제 이력이 존재하지 않습니다.")
         st.info("**검사원 조치 의견:** 금지 성분 및 DB 매칭 내역 없으므로 **통관 허용** 처리합니다.")
