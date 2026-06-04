@@ -2,14 +2,16 @@ import streamlit as st
 import pandas as pd
 import json
 import google.generativeai as genai
+from PIL import Image
+import io
 
 # [설정] 웹 페이지 제목 및 모바일 최적화 레이아웃
 st.set_page_config(page_title="해외 특송 위해물품 판정 시스템", layout="centered")
 
-st.title("📱 현장 검사용 위해물품 스마트 판정기 (Gemini)")
-st.caption("스마트폰으로 제품 사진을 촬영하면 불법의약품DB와 실시간 대조합니다.")
+st.title("📱 현장 검사용 위해물품 스마트 판정기 (무료최적화)")
+st.caption("스마트폰 사진을 자동 압축하여 구글 무료 서버(Free Tier) 한도 내에서 안전하게 구동합니다.")
 
-# Streamlit Secrets에서 Gemini API 키 로드 및 설정
+# API 키 설정
 gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 if gemini_key:
     genai.configure(api_key=gemini_key)
@@ -20,7 +22,6 @@ else:
 def load_db():
     try:
         df = pd.read_excel("불법의약품DB.xlsx")
-        # 검색 최적화용 정규화 컬럼 생성 (공백 제거, 소문자화)
         df['search_product'] = df['제품명'].astype(str).str.replace(r'\s+', '', regex=True).str.lower()
         if '성분명' in df.columns:
             df['search_ingredient'] = df['성분명'].astype(str).str.replace(r'\s+', '', regex=True).str.lower()
@@ -33,26 +34,34 @@ def load_db():
 
 df_db = load_db()
 
-# 1. 모바일 카메라 / 파일 업로드 컴포넌트
+# 1. 모바일 카메라 / 파일 업로드
 uploaded_file = st.file_uploader("📸 제품 전면 또는 성분표 사진을 촬영하세요", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
     st.image(uploaded_file, caption="촬영된 현품 이미지", use_container_width=True)
     
-    with st.spinner("Gemini AI가 현품 라벨을 판독하고 있습니다..."):
+    with st.spinner("Gemini AI가 이미지 압축 및 라벨 판독을 진행 중입니다..."):
         try:
-            # 이미지를 바이너리 데이터로 준비
-            bytes_data = uploaded_file.getvalue()
-            image_parts = [{"mime_type": uploaded_file.type, "data": bytes_data}]
+            # 🚨 [핵심] 무료 티어 용량 초과 방지를 위한 스마트폰 사진 압축 로직
+            image = Image.open(uploaded_file)
             
-            # Gemini 비전 모델 호출 및 JSON 출력 강제 설정
-            #model = genai.GenerativeModel(model_name="gemini-1.5-flash")
-            model = genai.GenerativeModel(model_name="gemini-2.0-flash")
+            # 스마트폰 사진이 너무 크면 가로세로 최대 1024px로 리사이징
+            image.thumbnail((1024, 1024))
+            
+            # 압축된 이미지를 바이너리 데이터로 변환 (JPEG 화질 75%로 최적화)
+            buffer = io.BytesIO()
+            image.save(buffer, format="JPEG", quality=75)
+            compressed_bytes = buffer.getvalue()
+            
+            image_parts = [{"mime_type": "image/jpeg", "data": compressed_bytes}]
+            
+            # 모델 설정 (하루 50회 미만은 pro / 그 이상 원하면 flash로 변경)
+            model = genai.GenerativeModel(model_name="gemini-2.0-pro")
             
             prompt = (
                 "Analyze the image and extract product information. "
-                "Respond ONLY in JSON format with keys: 'brand', 'product_name', 'barcode', 'ingredients' (list of ingredients found in the text). "
-                "If not found, use empty string or empty list. Do not hypothesize or use external knowledge."
+                "Respond ONLY in JSON format with keys: 'brand', 'product_name', 'barcode', 'ingredients'. "
+                "Do not hypothesize or use external knowledge."
             )
             
             response = model.generate_content(
@@ -60,7 +69,6 @@ if uploaded_file is not None:
                 generation_config={"response_mime_type": "application/json"}
             )
             
-            # OCR 결과 파싱
             ocr_result = json.loads(response.text)
             brand = ocr_result.get('brand', '확인 불가')
             product_name = ocr_result.get('product_name', '확인 불가')
@@ -68,7 +76,8 @@ if uploaded_file is not None:
             ingredients = ocr_result.get('ingredients', [])
             
         except Exception as e:
-            st.error(f"이미지 판독 중 오류가 발생했습니다: {e}")
+            st.error(f"무료 서버 호출 제한 또는 이미지 오류 발생: {e}")
+            st.info("💡 1분당 호출 한도를 초과했을 수 있습니다. 잠시 후 다시 촬영해 주세요.")
             brand, product_name, barcode, ingredients = '확인 불가', '확인 불가', '바코드 확인 불가', []
 
     # 2. 파이썬 Pandas 기반 100% 정밀 매칭 매커니즘
@@ -78,13 +87,11 @@ if uploaded_file is not None:
     if df_db is not None and product_name != '확인 불가':
         query_text = product_name.replace(" ", "").lower()
         
-        # 1차 제품명 매칭
         exact_match = df_db[df_db['search_product'].str.contains(query_text, na=False)]
         if not exact_match.empty:
             matched_row = exact_match.iloc[0]
             match_type = "🔴 매칭됨 (제품명 일치)"
         else:
-            # 2차 성분명 매칭
             for ing in ingredients:
                 ing_query = ing.replace(" ", "").lower()
                 if len(ing_query) > 2:
@@ -94,7 +101,7 @@ if uploaded_file is not None:
                         match_type = "🟡 성분명 일치 매칭됨"
                         break
 
-    # 3. 최종 세관 검사 판정 및 리포트 화면 렌더링
+    # 3. 리포트 화면 렌더링
     st.subheader("📋 세관 검사 판정 보고서")
     
     if matched_row is not None:
@@ -122,10 +129,5 @@ if uploaded_file is not None:
         st.write(f"• **정보 출처:** {matched_row.get('정보출처', '해당 없음')}")
         st.write(f"• **통관 보류 사유:** {matched_row.get('통관보류사유내용', '해당 없음')}")
         st.write(f"• **법적 관련 근거:** {matched_row.get('관련근거', '해당 없음')}")
-        
-        st.warning(f"**검사원 조치 의견:**\n"
-                   f"본 물품은 [불법의약품DB.xlsx] 대조 원칙 및 파이썬 정규화 매칭 결과, 등록번호 [{reg_num}]번에 "
-                   f"매칭되는 위해 항목임이 확정되었습니다. 현장에서 **통관 보류 및 폐기/반송 조치**하시기 바랍니다.")
     else:
         st.write("• 특이사항: 데이터베이스 내 일치하는 위해 규제 이력이 존재하지 않습니다.")
-        st.info("**검사원 조치 의견:** 금지 성분 및 DB 매칭 내역 없으므로 **통관 허용** 처리합니다.")
