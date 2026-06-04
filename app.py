@@ -1,25 +1,26 @@
 import streamlit as st
 import pandas as pd
 import json
-from openai import OpenAI
-import base64
+import google.generativeai as genai
 
 # [설정] 웹 페이지 제목 및 모바일 최적화 레이아웃
 st.set_page_config(page_title="해외 특송 위해물품 판정 시스템", layout="centered")
 
-st.title("📱 현장 검사용 위해물품 스마트 판정기")
+st.title("📱 현장 검사용 위해물품 스마트 판정기 (Gemini)")
 st.caption("스마트폰으로 제품 사진을 촬영하면 불법의약품DB와 실시간 대조합니다.")
 
-# API 키 및 DB 파일 로드 (Streamlit Secrets 보안 저장소 사용 권장)
-# st.secrets["OPENAI_API_KEY"] 형태로 관리 가능
-client = OpenAI(api_key=st.secrets.get("OPENAI_API_KEY", "YOUR_API_KEY_HERE"))
+# Streamlit Secrets에서 Gemini API 키 로드 및 설정
+gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+if gemini_key:
+    genai.configure(api_key=gemini_key)
+else:
+    st.error("Gems 설정 창(Secrets)에 GEMINI_API_KEY를 등록해 주세요.")
 
 @st.cache_data
 def load_db():
-    # 엑셀 데이터베이스 로드 및 검색 최적화를 위한 정규화 컬럼 생성
     try:
         df = pd.read_excel("불법의약품DB.xlsx")
-        # 검색용 정규화: 공백 제거 및 소문자화
+        # 검색 최적화용 정규화 컬럼 생성 (공백 제거, 소문자화)
         df['search_product'] = df['제품명'].astype(str).str.replace(r'\s+', '', regex=True).str.lower()
         if '성분명' in df.columns:
             df['search_ingredient'] = df['성분명'].astype(str).str.replace(r'\s+', '', regex=True).str.lower()
@@ -33,59 +34,59 @@ def load_db():
 df_db = load_db()
 
 # 1. 모바일 카메라 / 파일 업로드 컴포넌트
-# 스마트폰에서 접속 시 카메라 촬영 혹은 사진 보관함 선택 창이 자동으로 팝업됩니다.
 uploaded_file = st.file_uploader("📸 제품 전면 또는 성분표 사진을 촬영하세요", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
-    # 화면에 촬영한 이미지 표시
     st.image(uploaded_file, caption="촬영된 현품 이미지", use_container_width=True)
     
-    with st.spinner("AI가 현품 라벨을 판독하고 있습니다..."):
-        # 이미지를 Base64로 인코딩하여 OpenAI Vision API에 전달
-        bytes_data = uploaded_file.getvalue()
-        base64_image = base64.b64encode(bytes_data).decode('utf-8')
-        
-        # GPT-4o-mini 비전 모델을 이용한 순수 OCR 추출 (환각 배제형 프롬프트)
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            response_format={"type": "json_object"},
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Analyze the image and extract product information. Respond ONLY in JSON format with keys: 'brand', 'product_name', 'barcode', 'ingredients' (list of ingredients found in the text). If not found, use empty string or empty list. Do not hypothesize or use external knowledge."},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ],
-                }
-            ],
-            max_tokens=500,
-        )
-        
-        # OCR 결과 파싱
-        ocr_result = json.loads(response.choices[0].message.content)
-        brand = ocr_result.get('brand', '확인 불가')
-        product_name = ocr_result.get('product_name', '확인 불가')
-        barcode = ocr_result.get('barcode', '바코드 확인 불가')
-        ingredients = ocr_result.get('ingredients', [])
+    with st.spinner("Gemini AI가 현품 라벨을 판독하고 있습니다..."):
+        try:
+            # 이미지를 바이너리 데이터로 준비
+            bytes_data = uploaded_file.getvalue()
+            image_parts = [{"mime_type": uploaded_file.type, "data": bytes_data}]
+            
+            # Gemini 비전 모델 호출 및 JSON 출력 강제 설정
+            model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+            
+            prompt = (
+                "Analyze the image and extract product information. "
+                "Respond ONLY in JSON format with keys: 'brand', 'product_name', 'barcode', 'ingredients' (list of ingredients found in the text). "
+                "If not found, use empty string or empty list. Do not hypothesize or use external knowledge."
+            )
+            
+            response = model.generate_content(
+                contents=[prompt, image_parts[0]],
+                generation_config={"response_mime_type": "application/json"}
+            )
+            
+            # OCR 결과 파싱
+            ocr_result = json.loads(response.text)
+            brand = ocr_result.get('brand', '확인 불가')
+            product_name = ocr_result.get('product_name', '확인 불가')
+            barcode = ocr_result.get('barcode', '바코드 확인 불가')
+            ingredients = ocr_result.get('ingredients', [])
+            
+        except Exception as e:
+            st.error(f"이미지 판독 중 오류가 발생했습니다: {e}")
+            brand, product_name, barcode, ingredients = '확인 불가', '확인 불가', '바코드 확인 불가', []
 
-    # 2. 파이썬 Pandas 기반 100% 정밀 매칭 매커니즘 (AI 개입 차단)
+    # 2. 파이썬 Pandas 기반 100% 정밀 매칭 매커니즘
     matched_row = None
     match_type = "🟢 매칭되지 않음"
     
     if df_db is not None and product_name != '확인 불가':
-        # 제품명 정규화 쿼리 빌드
         query_text = product_name.replace(" ", "").lower()
         
-        # 1차 제품명 매칭 검증
+        # 1차 제품명 매칭
         exact_match = df_db[df_db['search_product'].str.contains(query_text, na=False)]
         if not exact_match.empty:
             matched_row = exact_match.iloc[0]
             match_type = "🔴 매칭됨 (제품명 일치)"
         else:
-            # 2차 성분명 기반 매칭 검증
+            # 2차 성분명 매칭
             for ing in ingredients:
                 ing_query = ing.replace(" ", "").lower()
-                if len(ing_query) > 2: # 노이즈 방지
+                if len(ing_query) > 2:
                     ing_match = df_db[df_db['search_ingredient'].str.contains(ing_query, na=False)]
                     if not ing_match.empty:
                         matched_row = ing_match.iloc[0]
@@ -95,7 +96,6 @@ if uploaded_file is not None:
     # 3. 최종 세관 검사 판정 및 리포트 화면 렌더링
     st.subheader("📋 세관 검사 판정 보고서")
     
-    # 판정에 따른 시각적 UI 변화
     if matched_row is not None:
         final_decision = "🔴 반입 금지" if "🔴" in match_type else "🟡 제한 - 성분 기반 검토 및 정밀검사 필요"
         st.error(f"결과: {final_decision}")
@@ -103,7 +103,6 @@ if uploaded_file is not None:
         final_decision = "🟢 통관 가능"
         st.success(f"결과: {final_decision}")
         
-    # 세부 리포트 출력
     col1, col2 = st.columns(2)
     with col1:
         st.markdown(f"**1. OCR 분석 정보**\n"
