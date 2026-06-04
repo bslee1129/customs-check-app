@@ -56,8 +56,8 @@ if uploaded_file is not None:
             image_parts = [{"mime_type": "image/jpeg", "data": compressed_bytes}]
             
             # 모델 설정 (하루 50회 미만은 pro / 그 이상 원하면 flash로 변경)
-            model = genai.GenerativeModel(model_name="gemini-2.0-pro")
-            
+            #model = genai.GenerativeModel(model_name="gemini-2.0-pro")
+            model = genai.GenerativeModel(model_name="gemini-1.5-pro")
             prompt = (
                 "Analyze the image and extract product information. "
                 "Respond ONLY in JSON format with keys: 'brand', 'product_name', 'barcode', 'ingredients'. "
