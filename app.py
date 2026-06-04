@@ -268,43 +268,47 @@ for idx, data in enumerate(st.session_state["history"]):
     st.markdown("---")
     st.markdown("## 📋 현장 조치 가이드")
     
+    # 🚨 마크다운 들여쓰기 강제 제거 (글자 깨짐 및 코드블록 버그 완벽 수정)
     if decision_situation == "금지":
         st.markdown(f"""
-        **1. 통관 보류 및 유치**
-        - 사진 속 제품명, 바코드, 등록번호, 성분명 중 하나가 금지 정보와 명확히 일치하는 경우 통관을 보류하고 유치 절차로 전환한다.
-        
-        **2. 유치 사유 기록 (연동 데이터)**
-        - **DB 등록번호:** `{reg_num}`
-        - **DB 제품명:** `{get_clean_db_value(matched_row, '제품명')}`
-        - **이미지 인식 제품명:** `{product_name}`
-        - **통관보류사유내용:** `{get_clean_db_value(matched_row, '통관보류사유내용')}`
-        
-        **3. 현품 및 증빙 확보**
-        - 제품 전면 사진, 성분표, 바코드 영역을 촬영하여 증빙 보관.
-        """)
+**1. 통관 보류 및 유치**
+- 사진 속 제품명, 바코드, 등록번호, 성분명 중 하나가 금지 정보와 명확히 일치하는 경우 통관을 보류하고 유치 절차로 전환한다.
+
+**2. 유치 사유 기록 (연동 데이터)**
+- **DB 등록번호:** `{reg_num}`
+- **DB 제품명:** `{get_clean_db_value(matched_row, '제품명')}`
+- **이미지 인식 제품명:** `{product_name}`
+- **통관보류사유내용:** `{get_clean_db_value(matched_row, '통관보류사유내용')}`
+
+**3. 현품 및 증빙 확보**
+- 제품 전면 사진, 성분표, 바코드 영역을 촬영하여 증빙 보관.
+""", unsafe_allow_html=True)
     elif decision_situation == "제한A":
         if is_ingredient_only_match:
             st.warning("⚠️ **제품명/바코드는 DB와 일치하지 않으나, 성분표 내 성분명이 DB의 위해 성분명과 일치하므로 검토 및 정밀검사가 필요합니다.**")
         st.markdown(f"""
-        **1. 즉시 승인 금지**
-        - 해당 물품은 “성분 기반 위해 가능성 확인 대상”으로 분류.
-        **2. 분석의뢰 검토**
-        - 성분 함유 여부가 불명확한 경우 전자통관시스템을 통한 분석의뢰 절차 검토.
-        """)
+**1. 즉시 승인 금지**
+- 해당 물품은 “성분 기반 위해 가능성 확인 대상”으로 분류.
+
+**2. 분석의뢰 검토**
+- 성분 함유 여부가 불명확한 경우 전자통관시스템을 통한 분석의뢰 절차 검토.
+""", unsafe_allow_html=True)
     elif decision_situation == "제한B":
         st.markdown(f"""
-        **1. 통관 판단 보류 및 재촬영 요청**
-        - 흐리거나 정보가 누락된 경우 승인을 단정하지 말고 보완 요청.
-        **2. 수기 입력 대체**
-        - 라벨 훼손 시 제품명, 바코드 등을 수기로 확인하여 대조.
-        """)
+**1. 통관 판단 보류 및 재촬영 요청**
+- 흐리거나 정보가 누락된 경우 승인을 단정하지 말고 보완 요청.
+
+**2. 수기 입력 대체**
+- 라벨 훼손 시 제품명, 바코드 등을 수기로 확인하여 대조.
+""", unsafe_allow_html=True)
     elif decision_situation == "승인":
         st.markdown(f"""
-        **1. 수량 및 자가사용 기준 확인**
-        - 건강기능식품 및 의약품 자가사용 목적 인정 범위(원칙적 6병 이내) 확인.
-        **2. 최종 안내**
-        - 본 판정은 보조 판단이며, 실제 통관 허용 여부는 현장 세관공무원의 요건 확인에 따름.
-        """)
+**1. 수량 및 자가사용 기준 확인**
+- 건강기능식품 및 의약품 자가사용 목적 인정 범위(원칙적 6병 이내) 확인.
+
+**2. 최종 안내**
+- 본 판정은 보조 판단이며, 실제 통관 허용 여부는 현장 세관공무원의 요건 확인에 따름.
+""", unsafe_allow_html=True)
 
     if matched_row is not None and decision_situation != "제한B":
         url_data = str(matched_row.get('원본이미지URL', ''))
@@ -333,8 +337,14 @@ for idx, data in enumerate(st.session_state["history"]):
                         try:
                             res = session.get(url, timeout=10)
                             if res.status_code == 200:
+                                db_img = Image.open(io.BytesIO(res.content))
+                                if user_images:
+                                    db_img.thumbnail(user_images[0].size)
+                                else:
+                                    db_img.thumbnail((800, 800))
+                                    
                                 with db_cols[idx_url]:
-                                    st.image(Image.open(io.BytesIO(res.content)), use_container_width=True)
+                                    st.image(db_img, use_container_width=True)
                                 success = True
                                 break
                         except: pass
@@ -350,11 +360,12 @@ for idx, data in enumerate(st.session_state["history"]):
             st.markdown("<hr style='margin: 25px 0; border-top: 2px solid #007bff;'>", unsafe_allow_html=True)
             st.info("❌ **DB에 등록된 원본 사진이 없습니다.**")
 
-
-# 🚨 [디자인 수정] 거창한 제목을 없애고 자연스럽게 선만 그어 다음 업로드 창으로 연결되도록 처리
+# ------------------------------------------------------------
+# 🆕 새로운 업로드 창 (하단 배치)
+# ------------------------------------------------------------
 st.markdown("---")
 
-# 메모리가 가득 찰 경우를 대비한 기록 삭제 버튼 추가 (이전 기록이 있을 때만 노출)
+# 메모리가 가득 찰 경우를 대비한 기록 삭제 버튼
 if st.session_state["history"]:
     if st.button("🗑️ 모든 검사 기록 삭제 (메모리 정리)", use_container_width=True):
         st.session_state["history"] = []
@@ -376,14 +387,15 @@ if uploaded_files:
     st.info(f"📁 {len(uploaded_files)}장의 새 화물 사진이 접수되었습니다.")
     if st.button("🔍 위해물품 통합 분석 시작", type="primary", use_container_width=True):
         
-        # --- 분석 백그라운드 엔진 가동 ---
+        # --- 🚨 [AI 프롬프트 강력 통제] 제품명 오독 원천 차단 ---
         ai_contents = []
         prompt = (
             "You are an expert Customs Forensic Intelligence OCR engine. Inspect the images carefully.\n"
-            "1. Single Ingredient Sheet Handling: Even if the image only shows the ingredient facts label without brand/product names or barcodes, DO NOT stop analysis. Extract everything possible.\n"
-            "2. Comprehensive Ingredient Extraction: Check zones like Active Ingredients, Other Ingredients, Supplement Facts, Drug Facts, Ingredients, Proprietary Blend, Performance Matrix, Complex, and Blend.\n"
-            "3. Multilingual Candidates Generation: Generate alternative matching names under 'multilingual_candidates' using romanization and dictionary expansions.\n"
-            "4. Categorize remarks strictly into: '위해성분 의심', '화학명', '식물명', '일반명', '기타 원료', '확인 불가'.\n\n"
+            "1. Extract ONLY the core, shortest possible product name (e.g., 'EVP 3D'). STRICTLY EXCLUDE marketing taglines (e.g., 'Stim-Free Elite Pump & Training Ignitor Powder'), flavors (e.g., 'Sour Candy'), and net weights from the 'product_name' field.\n"
+            "2. Single Ingredient Sheet Handling: Even if the image only shows the ingredient facts label without brand/product names or barcodes, DO NOT stop analysis. Extract everything possible.\n"
+            "3. Comprehensive Ingredient Extraction: Check zones like Active Ingredients, Other Ingredients, Supplement Facts, Drug Facts, Ingredients, Proprietary Blend, Performance Matrix, Complex, and Blend.\n"
+            "4. Multilingual Candidates Generation: Generate alternative matching names under 'multilingual_candidates' using romanization and dictionary expansions.\n"
+            "5. Categorize remarks strictly into: '위해성분 의심', '화학명', '식물명', '일반명', '기타 원료', '확인 불가'.\n\n"
             "Respond ONLY in a strict JSON format with these exact keys:\n"
             "{\n  'brand': 'string',\n  'product_name': 'string',\n  'translated_product_name': 'string',\n  'barcode': 'string',\n  'multilingual_candidates': ['string'],\n  'translated_ingredients': [ {'raw_name': 'string', 'ko_name': 'string', 'remark': 'string'} ],\n  'package_features': 'string'\n}"
         )
