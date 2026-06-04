@@ -478,4 +478,87 @@ if uploaded_files and st.session_state["start_analysis"]:
         - 라벨 훼손 또는 촬영 불가 시, 제품명·성분명·바코드 숫자를 대화창에 직접 입력하도록 안내한다.
 
         **4. 유치 상태 유지 검토**
-        - 세관장 확인대상 물품이거나 필요한 허가·승인·표시 등 조건
+        - 세관장 확인대상 물품이거나 필요한 허가·승인·표시 등 조건이 갖춰지지 않은 물품은 통관 전 유치 검토 대상으로 안내한다.
+        """)
+        
+    elif decision_situation == "승인":
+        st.markdown(f"""
+        ### ■ 판정이 [🟢 승인]인 경우 조치 지침:
+
+        **1. DB 대조 결과 확인**
+        - 바코드, 제품명, 다국어 변환 제품명, 원문 성분명, 한글 번역 성분명이 [불법의약품DB.xlsx]와 일치하지 않는 경우에만 승인으로 표시한다.
+
+        **2. 수량 및 자가사용 기준 확인**
+        - 건강기능식품 및 의약품은 자가사용 목적 인정 범위인지 확인한다.
+        - 건강기능식품 및 일반 의약품은 원칙적으로 6병 이내 여부를 확인한다.
+        - 의약품이 6병을 초과하는 경우에는 용법상 3개월 복용량 이내인지 추가 확인이 필요하다.
+
+        **3. 금액 기준 확인**
+        - 면세 또는 과세 여부는 별도로 검토한다.
+        - DB상 위해성분이 없더라도 수량, 금액, 자가사용 인정기준을 초과하면 별도 과세 또는 정식수입신고 대상이 될 수 있음을 안내한다.
+
+        **4. 전문의약품·주사제 등 예외 확인**
+        - 전문의약품, 주사제, 보툴리눔 독소제제 등은 일반 건강기능식품 또는 일반 의약품 승인 기준으로 처리하지 않는다.
+        - 처방 필요 여부, 자가사용 가능 여부, 식약처 허가품목 여부 등 별도 검토가 필요하다.
+
+        **5. 최종 안내**
+        - AI 판정은 DB 대조 및 이미지 판독 결과에 따른 보조 판단이다.
+        - 실제 통관 허용 여부는 현장 세관공무원의 최종 확인, 수량 기준, 자가사용 여부, 관계 법령 요건 확인 결과에 따른다.
+        """)
+
+    # 4. 이미지 세로 레이아웃 가로 병렬 배치 섹션 (교차 검증 시에만 로드)
+    if matched_row is not None and decision_situation != "제한B":
+        url_data = str(matched_row.get('원본이미지URL', ''))
+        if url_data and url_data.lower() != 'nan':
+            st.markdown("---")
+            st.markdown("### 🔍 [현장 교차 검증] 사진 비교 대조")
+            st.caption("상단의 촬영 현품 사진들과 하단의 DB 등록 원본 사진들의 패키지를 대조하십시오.")
+            
+            st.info("📸 내가 촬영한 현품 사진")
+            user_cols = st.columns(len(uploaded_files))
+            for u_idx, u_file in enumerate(uploaded_files):
+                with user_cols[u_idx]:
+                    st.image(Image.open(u_file), caption=f"촬영 사진 {u_idx+1}", use_container_width=True)
+            
+            st.markdown("<hr style='margin: 25px 0; border-top: 2px solid #007bff;'>", unsafe_allow_html=True)
+            
+            st.warning("🔗 DB 등록 원본 이미지")
+            urls = [u.strip() for u in url_data.split(',') if u.strip()]
+            db_cols = st.columns(len(urls))
+            
+            with requests.Session() as session:
+                session.verify = False
+                session.headers.update({
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                })
+                
+                for idx, url in enumerate(urls):
+                    success = False
+                    error_msg = ""
+                    for attempt in range(3):
+                        try:
+                            img_response = session.get(url, timeout=15)
+                            if img_response.status_code == 200:
+                                db_img = Image.open(io.BytesIO(img_response.content))
+                                with db_cols[idx]:
+                                    st.image(db_img, caption=f"DB 사진 {idx+1}", use_container_width=True)
+                                success = True
+                                break
+                            else:
+                                error_msg = f"서버 거부 ({img_response.status_code})"
+                        except Exception as e:
+                            error_msg = f"네트워크 보안망 차단 ({type(e).__name__})"
+                        if not success:
+                            time.sleep(0.5)
+                    
+                    if not success:
+                        with db_cols[idx]:
+                            st.caption(f"❌ 사진 {idx+1}: {error_msg}")
+            st.markdown("---")
+
+    # [다음 물품 판정 버튼]
+    st.markdown("---")
+    if st.button("🔄 다음 물품 판정하기 (화면 초기화)", use_container_width=True, type="primary"):
+        st.session_state["uploader_id"] += 1
+        st.session_state["start_analysis"] = False
+        st.rerun()
