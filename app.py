@@ -7,7 +7,7 @@ import requests
 import io
 import urllib3
 
-# 🚨 [중요] 정부 서버 SSL 인증서 미인증 경고 문구가 화면에 도배되는 것을 방지
+# [보안] 정부 서버 SSL 인증서 미인증 경고 문구 출력 방지
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # [설정] 웹 페이지 제목 및 모바일 최적화 레이아웃
@@ -15,6 +15,10 @@ st.set_page_config(page_title="해외 특송 위해물품 판정 시스템", lay
 
 st.title("📱 현장 검사용 위해물품 스마트 판정기")
 st.caption("스마트폰 사진을 자동 압축하여 구글 무료 서버 한도 내에서 상시 무료로 구동합니다.")
+
+# 🚨 [연속 검사 핵심] 사진 업로더를 초기화하기 위한 고유 키(Key) 상태 관리
+if "uploader_id" not in st.session_state:
+    st.session_state["uploader_id"] = 0
 
 # Streamlit Secrets에서 Gemini API 키 로드
 gemini_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -26,13 +30,11 @@ else:
 @st.cache_data
 def load_db():
     try:
-        # 파일 형식 호환 처리 (CSV 및 Excel 모두 지원)
         try:
             df = pd.read_csv("불법의약품DB.xlsx - Sheet1.csv")
         except:
             df = pd.read_excel("불법의약품DB.xlsx")
             
-        # 검색 최적화용 정규화 컬럼 생성 (공백 제거, 소문자화)
         df['search_product'] = df['제품명'].astype(str).str.replace(r'\s+', '', regex=True).str.lower()
         if '성분명' in df.columns:
             df['search_ingredient'] = df['성분명'].astype(str).str.replace(r'\s+', '', regex=True).str.lower()
@@ -45,20 +47,24 @@ def load_db():
 
 df_db = load_db()
 
-# 1. 모바일 카메라 / 파일 업로드 컴포넌트
-uploaded_file = st.file_uploader("📸 제품 전면 또는 성분표 사진을 촬영하세요", type=["jpg", "jpeg", "png"])
+# 🚨 [연속 검사 핵심] key 값에 세션 번호를 부여하여 버튼 클릭 시 강제 리셋되도록 설정
+uploaded_file = st.file_uploader(
+    "📸 제품 전면 또는 성분표 사진을 촬영하세요", 
+    type=["jpg", "jpeg", "png"],
+    key=f"cam_uploader_{st.session_state['uploader_id']}"
+)
 
 if uploaded_file is not None:
-    # 촬영한 현품 이미지 객체 생성
     src_image = Image.open(uploaded_file)
+    st.info("📸 내가 촬영한 현품 사진")
+    st.image(src_image, use_container_width=True)
     
     with st.spinner("Gemini AI가 라벨을 판독하고 있습니다..."):
         try:
-            # 무료 티어 용량 초과 방지를 위한 실시간 리사이징 (최대 1024px)
             img_for_ai = src_image.copy()
             img_for_ai.thumbnail((1024, 1024))
             
-            # 안정적인 정식 무료 지원 모델 적용
+            # 2026년 표준 현역 모델 적용
             model = genai.GenerativeModel(model_name="gemini-3.5-flash")
             
             prompt = (
@@ -72,7 +78,6 @@ if uploaded_file is not None:
                 generation_config={"response_mime_type": "application/json"}
             )
             
-            # OCR 결과 파싱
             ocr_result = json.loads(response.text)
             brand = ocr_result.get('brand', '확인 불가')
             product_name = ocr_result.get('product_name', '확인 불가')
@@ -90,13 +95,11 @@ if uploaded_file is not None:
     if df_db is not None and product_name != '확인 불가':
         query_text = product_name.replace(" ", "").lower()
         
-        # 1차 제품명 매칭
         exact_match = df_db[df_db['search_product'].str.contains(query_text, na=False)]
         if not exact_match.empty:
             matched_row = exact_match.iloc[0]
             match_type = "🔴 매칭됨 (제품명 일치)"
         else:
-            # 2차 성분명 매칭
             for ing in ingredients:
                 ing_query = ing.replace(" ", "").lower()
                 if len(ing_query) > 2:
@@ -153,55 +156,43 @@ if uploaded_file is not None:
         if url_data and url_data.lower() != 'nan':
             st.markdown("---")
             st.markdown("### 🔍 [현장 교차 검증] 사진 비교 대조")
-            st.caption("좌측의 촬영한 현품과 우측의 DB 등록 원본 사진들을 대조하십시오.")
+            st.caption("우측에 표시되는 DB 등록 원본 사진들과 실물을 대조하십시오.")
             
             urls = [u.strip() for u in url_data.split(',')]
             
-            main_col1, main_col2 = st.columns(2)
+            st.warning("🔗 DB 등록 원본 이미지")
             
-            with main_col1:
-                st.info("📸 내가 촬영한 현품 사진")
-                st.image(src_image, use_container_width=True)
+            for idx, url in enumerate(urls):
+                if not url:
+                    continue
                 
-            with main_col2:
-                st.warning("🔗 DB 등록 원본 이미지")
+                success = False
+                error_msg = ""
                 
-                for idx, url in enumerate(urls):
-                    if not url:
-                        continue
-                    
-                    success = False
-                    error_msg = ""
-                    
-                    # 🚨 [핵심 우회] 정부 서버 일시적 거부를 뚫기 위해 2회 재시도(Retry) 체계 작동
-                    for attempt in range(2):
-                        try:
-                            # 브라우저인 척 속이는 정밀 헤더 구성
-                            headers = {
-                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-                                "Accept-Language": "ko-KR,ko;q=0.9"
-                            }
-                            # verify=False로 외부 클라우드 접근 시 보안인증서 튕겨내는 현상 원천 차단, 대기시간 15초 연장
-                            img_response = requests.get(url, headers=headers, timeout=15, verify=False)
-                            
-                            if img_response.status_code == 200:
-                                db_img = Image.open(io.BytesIO(img_response.content))
-                                st.image(db_img, caption=f"DB 사진 {idx+1} / 총 {len(urls)}장", use_container_width=True)
-                                success = True
-                                break  # 다운로드 성공 시 재시도 루프 탈출
-                            else:
-                                error_msg = f"정부서버 응답 거부 (코드: {img_response.status_code})"
-                        except Exception as e:
-                            # 에러가 발생하면 어떤 에러인지 추적할 수 있도록 예외 클래스명 표기
-                            error_msg = f"보안망 연결 실패 ({type(e).__name__})"
-                    
-                    # 최종 실패 시에만 에러 출력
-                    if not success:
-                        st.caption(f"❌ DB 사진 {idx+1}: {error_msg}")
+                for attempt in range(2):
+                    try:
+                        headers = {
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                            "Accept-Language": "ko-KR,ko;q=0.9"
+                        }
+                        img_response = requests.get(url, headers=headers, timeout=15, verify=False)
                         
-                    if idx < len(urls) - 1 and success:
-                        st.markdown("<hr style='margin: 10px 0; border-top: 1px dashed #ccc;'>", unsafe_allow_html=True)
+                        if img_response.status_code == 200:
+                            db_img = Image.open(io.BytesIO(img_response.content))
+                            st.image(db_img, caption=f"DB 사진 {idx+1} / 총 {len(urls)}장", use_container_width=True)
+                            success = True
+                            break
+                        else:
+                            error_msg = f"정부서버 응답 거부 (코드: {img_response.status_code})"
+                    except Exception as e:
+                        error_msg = f"보안망 연결 실패 ({type(e).__name__})"
+                
+                if not success:
+                    st.caption(f"❌ DB 사진 {idx+1}: {error_msg}")
+                    
+                if idx < len(urls) - 1 and success:
+                    st.markdown("<hr style='margin: 10px 0; border-top: 1px dashed #ccc;'>", unsafe_allow_html=True)
 
         st.warning(f"**검사원 조치 의견:**\n"
                    f"본 물품은 [불법의약품DB.xlsx] 대조 원칙 및 파이썬 정규화 매칭 결과, 등록번호 [{reg_num}]번에 "
@@ -209,3 +200,9 @@ if uploaded_file is not None:
     else:
         st.write("• 특이사항: 데이터베이스 내 일치하는 위해 규제 이력이 존재하지 않습니다.")
         st.info("**검사원 조치 의견:** 금지 성분 및 DB 매칭 내역 없으므로 **통관 허용** 처리합니다.")
+
+    # 🚨 [연속 검사 핵심 버튼 클릭 이벤트]
+    st.markdown("---")
+    if st.button("🔄 다음 위해물품 연속 검사하기 (화면 초기화)", use_container_width=True, type="primary"):
+        st.session_state["uploader_id"] += 1
+        st.rerun()
