@@ -55,7 +55,7 @@ if uploaded_file is not None:
             img_for_ai.thumbnail((1024, 1024))
             
             # 안정적인 정식 무료 지원 모델 적용
-            model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+            model = genai.GenerativeModel(model_name="gemini-3.5-flash")
             
             prompt = (
                 "Analyze the image and extract product information. "
