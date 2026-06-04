@@ -13,17 +13,15 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # [설정] 웹 페이지 제목 및 모바일 레이아웃 최적화
 st.set_page_config(page_title="해외 특송 위해물품 판정 시스템", layout="centered")
 
-# 🚨 [모바일 전용 화면 구성] 스마트폰 터치 및 가독성 향상을 위한 강력한 CSS 주입
+# [모바일 전용 화면 구성] 스마트폰 터치 및 가독성 향상을 위한 CSS 주입
 st.markdown("""
     <style>
-    /* 1. 파일 업로드 박스 전체를 모바일 터치에 맞게 대형화 */
     .stFileUploader {
         padding: 10px;
         background-color: #f8f9fa;
         border-radius: 12px;
         border: 2px dashed #007bff;
     }
-    /* 2. 업로드 버튼 자체를 큼직하게 변경 */
     div[data-testid="stFileUploaderDropzone"] button {
         width: 100% !important;
         height: 60px !important;
@@ -33,7 +31,6 @@ st.markdown("""
         color: white !important;
         border-radius: 8px !important;
     }
-    /* 3. 하단 다음 물품 판정 버튼 대형화 */
     .stButton>button {
         width: 100%;
         height: 55px;
@@ -44,11 +41,13 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("📱 현장 검사용 위해물품 스마트 판정기")
-st.caption("💡 스마트폰에서 아래 파란색 버튼을 누르면 **[카메라 촬영]** 또는 **[갤러리 선택]** 팝업이 즉시 실행됩니다.")
+st.caption("💡 사진들을 모두 촬영하여 등록한 후, 최하단의 [분석 시작] 버튼을 눌러주세요.")
 
-# 사진 업로더를 초기화하기 위한 고유 키 상태 관리
+# 세션 상태(State) 관리 엔진 정의
 if "uploader_id" not in st.session_state:
     st.session_state["uploader_id"] = 0
+if "start_analysis" not in st.session_state:
+    st.session_state["start_analysis"] = False
 
 # Streamlit Secrets에서 Gemini API 키 로드
 gemini_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -77,20 +76,27 @@ def load_db():
 
 df_db = load_db()
 
-# 🚨 [모바일 카메라/갤러리 복수 선택 연동 컴포넌트]
+# 모바일 카메라/갤러리 다중 파일 업로더
 uploaded_files = st.file_uploader(
     "눌러서 카메라 촬영 또는 사진 선택", 
     type=["jpg", "jpeg", "png"],
     accept_multiple_files=True,
     key=f"cam_uploader_{st.session_state['uploader_id']}",
-    label_visibility="collapsed" # 디자인을 위해 텍스트는 숨기고 버튼만 강조
+    label_visibility="collapsed"
 )
 
-# 스마트폰에서 사진이 정상적으로 접수되었을 때 작동
+# 🚨 [수정 사항 1] 이미지를 올렸을 때는 대기 메시지와 분석 버튼만 표출 (목록 및 분석 보류)
 if uploaded_files:
-    st.success(f"총 {len(uploaded_files)}장의 현품 사진이 접수되었습니다. [1개의 물품]으로 통합 판정을 시작합니다.")
+    if not st.session_state["start_analysis"]:
+        st.info(f"📁 현재 {len(uploaded_files)}장의 사진이 업로드 대기 중입니다. 준비가 완료되면 아래 버튼을 눌러주세요.")
+        if st.button("🔍 위해물품 통합 분석 시작", type="primary", use_container_width=True):
+            st.session_state["start_analysis"] = True
+            st.rerun()
+
+# 🚨 [수정 사항 1] 분석 버튼을 누른 이후에만 목록 출력 및 AI 연산 전체 작동
+if uploaded_files and st.session_state["start_analysis"]:
     
-    # 1. 촬영된 현품 이미지 목록 가로 정렬 출력
+    # 1. 촬영된 현품 이미지 목록 출력
     st.markdown("### 📸 촬영된 현품 이미지 목록")
     img_display_cols = st.columns(len(uploaded_files))
     
@@ -109,7 +115,7 @@ if uploaded_files:
         with img_display_cols[idx]:
             st.image(src_image, caption=f"촬영 사진 {idx+1}", use_container_width=True)
             
-        # 모바일 원본 사진 대용량 압축 처리 (구글 429 에러 방지)
+        # 이미지 압축 가공
         img_for_ai = src_image.copy()
         img_for_ai.thumbnail((1024, 1024))
         ai_contents.append(img_for_ai)
@@ -118,37 +124,30 @@ if uploaded_files:
     
     with st.spinner("구글 Gemini 최신 비전 엔진이 촬영본을 통합 분석 중입니다..."):
         try:
-            # 2026년 공식 현역 표준 모델 매핑
             model = genai.GenerativeModel(model_name="gemini-3.5-flash")
-            
             response = model.generate_content(
                 contents=ai_contents,
                 generation_config={"response_mime_type": "application/json"}
             )
-            
             ocr_result = json.loads(response.text)
             brand = ocr_result.get('brand', '확인 불가')
             product_name = ocr_result.get('product_name', '확인 불가')
             barcode = ocr_result.get('barcode', '바코드 확인 불가')
             ingredients = ocr_result.get('ingredients', [])
-            
         except Exception as e:
             st.error(f"비전 엔진 통합 판독 중 예외 발생: {e}")
 
-    # 2. 파이썬 Pandas 기반 100% 정밀 매칭 매커니즘
+    # 2. 파이썬 Pandas 기반 위해물품 정밀 매칭
     matched_row = None
     match_type = "🟢 매칭되지 않음"
     
     if df_db is not None and product_name not in ['확인 불가', '']:
         query_text = product_name.replace(" ", "").lower()
-        
-        # 1차 제품명 매칭
         exact_match = df_db[df_db['search_product'].str.contains(query_text, na=False)]
         if not exact_match.empty:
             matched_row = exact_match.iloc[0]
             match_type = "🔴 매칭됨 (제품명 일치)"
         else:
-            # 2차 성분명 매칭
             for ing in ingredients:
                 ing_query = ing.replace(" ", "").lower()
                 if len(ing_query) > 2:
@@ -158,7 +157,7 @@ if uploaded_files:
                         match_type = "🟡 성분명 일치 매칭됨"
                         break
 
-    # 3. 최종 세관 검사 판정 및 리포트 화면 렌더링
+    # 3. 최종 세관 검사 판정 보고서 렌더링
     st.markdown("---")
     st.subheader("📋 세관 검사 판정 보고서 (통합 판정)")
     
@@ -201,40 +200,51 @@ if uploaded_files:
         st.write(f"• **통관 보류 사유:** {get_clean_db_value(matched_row, '통관보류사유내용')}")
         st.write(f"• **법적 관련 근거:** {get_clean_db_value(matched_row, '관련근거')}")
         
-        # 4. 복수 이미지 전수 출력 레이아웃 (정부 보안 서버 차단 우회 버전)
+        # 4. 복수 이미지 전수 출력 레이아웃
         url_data = str(matched_row.get('원본이미지URL', ''))
         if url_data and url_data.lower() != 'nan':
             st.markdown("---")
             st.markdown("### 🔍 [현장 교차 검증] 사진 비교 대조")
             st.caption("우측에 표시되는 DB 등록 원본 사진들과 실물을 대조하십시오.")
             
-            urls = [u.strip() for u in url_data.split(',')]
-            st.warning("🔗 DB 등록 원본 이미지")
+            urls = [u.strip() for u in url_data.split(',') if u.strip()]
             
-            for idx, url in enumerate(urls):
-                if not url:
-                    continue
-                success = False
-                error_msg = ""
+            # 메인 분할 화면 (좌측: 내가 촬영한 첫 번째 대표 이미지 / 우측: DB 원본 이미지 공간)
+            main_col1, main_col2 = st.columns(2)
+            
+            with main_col1:
+                st.info("📸 내가 촬영한 현품 사진")
+                st.image(Image.open(uploaded_files[0]), use_container_width=True, caption="촬영본 (대표)")
                 
-                for attempt in range(2):
-                    try:
-                        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-                        img_response = requests.get(url, headers=headers, timeout=15, verify=False)
-                        if img_response.status_code == 200:
-                            db_img = Image.open(io.BytesIO(img_response.content))
-                            st.image(db_img, caption=f"DB 사진 {idx+1} / 총 {len(urls)}장", use_container_width=True)
-                            success = True
-                            break
-                        else:
-                            error_msg = f"정부서버 응답 거부 (코드: {img_response.status_code})"
-                    except Exception as e:
-                        error_msg = f"보안망 연결 실패"
+            with main_col2:
+                st.warning("🔗 DB 등록 원본 이미지")
                 
-                if not success:
-                    st.caption(f"❌ DB 사진 {idx+1}: {error_msg}")
-                if idx < len(urls) - 1 and success:
-                    st.markdown("<hr style='margin: 10px 0; border-top: 1px dashed #ccc;'>", unsafe_allow_html=True)
+                # 🚨 [수정 사항 2] DB 사진 개수만큼 우측 공간 내부를 쪼개서 병렬(가로) 배치 및 자동 축소 효과
+                db_cols = st.columns(len(urls))
+                
+                for idx, url in enumerate(urls):
+                    success = False
+                    error_msg = ""
+                    
+                    for attempt in range(2):
+                        try:
+                            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+                            img_response = requests.get(url, headers=headers, timeout=15, verify=False)
+                            if img_response.status_code == 200:
+                                db_img = Image.open(io.BytesIO(img_response.content))
+                                # 🚨 병렬로 생성된 칸 안에 축소하여 표출
+                                with db_cols[idx]:
+                                    st.image(db_img, caption=f"DB 사진 {idx+1}", use_container_width=True)
+                                success = True
+                                break
+                            else:
+                                error_msg = f"서버 거부 ({img_response.status_code})"
+                        except Exception as e:
+                            error_msg = f"보안망 연결 실패"
+                    
+                    if not success:
+                        with db_cols[idx]:
+                            st.caption(f"❌ 사진 {idx+1}: {error_msg}")
 
         st.warning(f"**검사원 조치 의견:**\n"
                    f"본 물품은 [불법의약품DB.xlsx] 대조 원칙 및 파이썬 정규화 매칭 결과, 등록번호 [{reg_num}]번에 "
@@ -243,8 +253,9 @@ if uploaded_files:
         st.write("• 특이사항: 데이터베이스 내 일치하는 위해 규제 이력이 존재하지 않습니다.")
         st.info("**검사원 조치 의견:** 금지 성분 및 DB 매칭 내역 없으므로 **통관 허용** 처리합니다.")
 
-    # [다음 물품 판정 버튼] 판정이 모두 끝난 뒤 완전히 초기화하고 대기 상태로 복귀
+    # [다음 물품 판정 버튼] 세션 분석 플래그까지 함께 리셋
     st.markdown("---")
     if st.button("🔄 다음 물품 판정하기 (화면 초기화)", use_container_width=True, type="primary"):
         st.session_state["uploader_id"] += 1
+        st.session_state["start_analysis"] = False
         st.rerun()
