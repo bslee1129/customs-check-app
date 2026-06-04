@@ -64,7 +64,8 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-st.caption("💡 검사 기록이 삭제되지 않고 화면 아래로 계속 누적됩니다. 스크롤하여 이전 기록을 확인할 수 있습니다.")
+# 🚨 [수정 사항] 직관적인 촬영 지시문 가이드로 캡션 업데이트
+st.caption("💡 **[촬영 가이드]** 제품의 **전면, 후면, 성분표, 바코드**가 선명하게 보이도록 여러 장을 한 번에 올려주세요. (검사 기록은 삭제되지 않고 화면 아래로 계속 누적됩니다.)")
 
 # API 키 설정
 gemini_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -84,8 +85,8 @@ def normalize_product_name(text):
     if pd.isna(text) or not str(text).strip() or str(text).strip().lower() == 'nan':
         return ""
     val = str(text).lower()
-    # 맛이나 향을 무조건 삭제하지 않도록 일부 노이즈 패턴 축소 (EVP 3D Sour Candy 보존 목적)
     noise_patterns = [
+        r'fruit\s*punch', r'blue\s*raz', r'sour\s*candy',
         r'\d+g', r'\d+\.?\d*oz', r'\d+\s*capsules', r'\d+\s*tablets', r'\d+\s*servings',
         r'capsules', r'tablets', r'powder', r'錠', r'カプセル', r'顆粒', r'液', r'정제', r'캡슐', r'과립', r'액제'
     ]
@@ -153,11 +154,12 @@ def load_and_standardize_db():
 
 df_db = load_and_standardize_db()
 
-# 기존 검사 기록(History) 출력 섹션
+# 기존 검사 기록(History)을 모두 화면 상단에 반복해서 출력
 for idx, data in enumerate(st.session_state["history"]):
     st.markdown("---")
     st.markdown(f"## 📦 [검사 기록 #{idx+1}] {data['product_name'] if data['product_name'] != '확인 불가' else '미상 물품'}")
     
+    # 데이터 추출
     user_images = data["user_images"]
     brand = data["brand"]
     product_name = data["product_name"]
@@ -333,8 +335,11 @@ for idx, data in enumerate(st.session_state["history"]):
                             res = session.get(url, timeout=10)
                             if res.status_code == 200:
                                 db_img = Image.open(io.BytesIO(res.content))
-                                if user_images: db_img.thumbnail(user_images[0].size)
-                                else: db_img.thumbnail((800, 800))
+                                if user_images:
+                                    db_img.thumbnail(user_images[0].size)
+                                else:
+                                    db_img.thumbnail((800, 800))
+                                    
                                 with db_cols[idx_url]:
                                     st.image(db_img, use_container_width=True)
                                 success = True
@@ -352,12 +357,12 @@ for idx, data in enumerate(st.session_state["history"]):
             st.markdown("<hr style='margin: 25px 0; border-top: 2px solid #007bff;'>", unsafe_allow_html=True)
             st.info("❌ **DB에 등록된 원본 사진이 없습니다.**")
 
-
 # ------------------------------------------------------------
 # 🆕 새로운 업로드 창 (하단 배치)
 # ------------------------------------------------------------
 st.markdown("---")
 
+# 메모리가 가득 찰 경우를 대비한 기록 삭제 버튼
 if st.session_state["history"]:
     if st.button("🗑️ 모든 검사 기록 삭제 (메모리 정리)", use_container_width=True):
         st.session_state["history"] = []
@@ -379,7 +384,7 @@ if uploaded_files:
     st.info(f"📁 {len(uploaded_files)}장의 새 화물 사진이 접수되었습니다.")
     if st.button("🔍 위해물품 통합 분석 시작", type="primary", use_container_width=True):
         
-        # 🚨 [AI 프롬프트 핵심 보강] 맛, 수식어를 포함한 전체 이름 강제 추출 지시
+        # --- AI 분석 엔진 ---
         ai_contents = []
         prompt = (
             "You are an expert Customs Forensic Intelligence OCR engine. Inspect the images carefully.\n"
@@ -456,12 +461,10 @@ if uploaded_files:
                         match_type = "2/3순위 제품명 다국어 정규화 일치"
                         break
 
-            # 🚨 [부분 매칭 로직 고도화] DB의 정규화명(db_norm)과 유저의 제품명 간의 부분 포함 여부 교차 검증
             if matched_row is None and 'norm_product' in df_db.columns:
                 for idx_row, row in df_db.iterrows():
                     db_norm = str(row['norm_product'])
                     if not db_norm: continue
-                    # 단어 길이가 4자 이상일 때만 부분 포함 허용 (오탐지 방지)
                     if any(((uc in db_norm) or (db_norm in uc)) and len(uc) >= 4 for uc in user_norm_candidates if uc):
                         matched_row = row
                         is_ambiguous_multilingual = True
