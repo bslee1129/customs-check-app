@@ -46,7 +46,8 @@ if uploaded_file is not None:
             image_parts = [{"mime_type": uploaded_file.type, "data": bytes_data}]
             
             # Gemini 비전 모델 호출 및 JSON 출력 강제 설정
-            model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+            #model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+            model = genai.GenerativeModel(model_name="gemini-2.0-flash")
             
             prompt = (
                 "Analyze the image and extract product information. "
