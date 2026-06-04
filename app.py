@@ -10,11 +10,22 @@ import urllib3
 # [보안] 정부 서버 SSL 인증서 미인증 경고 문구 출력 방지
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# [설정] 웹 페이지 제목 및 모바일 최적화 레이아웃
+# [설정] 웹 페이지 제목 및 모바일(화면 꽉 차게) 최적화 레이아웃
 st.set_page_config(page_title="해외 특송 위해물품 판정 시스템", layout="centered")
 
 st.title("📱 현장 검사용 위해물품 스마트 판정기")
-st.caption("하나의 물품에 대한 여러 사진(전면, 후면 등)을 동시에 올리면 통합하여 1개의 보고서로 판정합니다.")
+st.markdown("""
+    <style>
+    /* 모바일 환경에서 버튼과 텍스트가 더 크게 보이도록 UI 조정 */
+    .stButton>button {
+        width: 100%;
+        height: 50px;
+        font-size: 18px !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+st.caption("💡 스마트폰에서 아래 버튼을 누르면 **[사진 찍기]** 카메라가 즉시 실행됩니다.")
 
 # 사진 업로더를 초기화하기 위한 고유 키 상태 관리
 if "uploader_id" not in st.session_state:
@@ -47,9 +58,10 @@ def load_db():
 
 df_db = load_db()
 
-# [다중 파일 업로더] 하나의 물품에 대한 여러 각도의 사진 접수
+# 🚨 [모바일 최적화 가이드] 다중 파일 업로더 생성
+# 스마트폰에서 터치 시 카메라 촬영 및 갤러리 다중 선택이 자동으로 활성화됩니다.
 uploaded_files = st.file_uploader(
-    "📸 대상 물품의 사진들을 모두 촬영하거나 선택하세요 (예: 전면사진 + 성분표사진 동시 선택)", 
+    "📸 [터치하여 카메라 촬영] 전면/후면/성분표 사진을 차례로 찍어 올려주세요", 
     type=["jpg", "jpeg", "png"],
     accept_multiple_files=True,
     key=f"cam_uploader_{st.session_state['uploader_id']}"
@@ -57,7 +69,7 @@ uploaded_files = st.file_uploader(
 
 # 여러 장의 사진이 업로드되었을 때 작동
 if uploaded_files:
-    st.success(f"총 {len(uploaded_files)}장의 사진이 접수되었습니다. [1개의 위해물품]으로 통합 분석을 진행합니다.")
+    st.success(f"총 {len(uploaded_files)}장의 사진이 성공적으로 접수되었습니다. [1개의 물품]으로 통합 분석합니다.")
     
     # 1. 화면에 업로드된 현품 이미지들을 가로로 나란히 출력하여 확인
     st.markdown("### 📸 촬영된 현품 이미지 목록")
@@ -66,7 +78,6 @@ if uploaded_files:
     # AI에게 보낼 통합 콘텐츠 리스트 생성 (프롬프트 + 이미지들)
     ai_contents = []
     
-    # 🚨 [핵심 수정] 여러 사진에서 정보를 취합하도록 지시하는 통합 프롬프트
     prompt = (
         "Analyze ALL the provided images together as a single product. "
         "Extract product information by combining context from all images (e.g., one image shows the front label, another shows the ingredients list). "
@@ -78,19 +89,20 @@ if uploaded_files:
     for idx, uploaded_file in enumerate(uploaded_files):
         src_image = Image.open(uploaded_file)
         
-        # 화면 표시
+        # 모바일 화면 가독성 표시
         with img_display_cols[idx]:
-            st.image(src_image, caption=f"현품 사진 {idx+1}", use_container_width=True)
+            st.image(src_image, caption=f"촬영 사진 {idx+1}", use_container_width=True)
             
-        # AI 전송용 압축 및 리스트 추가
+        # 🚨 [모바일 데이터 절약 및 통신 속도 업그레이드] 
+        # 스마트폰 원본 사진(화질이 너무 큼)을 1024px로 리사이징하여 구글 무료 서버 한도(429) 및 버퍼링 완벽 차단
         img_for_ai = src_image.copy()
         img_for_ai.thumbnail((1024, 1024))
         ai_contents.append(img_for_ai)
 
     brand, product_name, barcode, ingredients = '확인 불가', '확인 불가', '바코드 확인 불가', []
     
-    # 🚨 [핵심 수정] 단 한 번만 AI를 호출하여 모든 사진을 한꺼번에 분석 시킴
-    with st.spinner("Gemini AI가 모든 사진의 정보를 취합하여 라벨을 판독하고 있습니다..."):
+    # 단 한 번만 최신 AI를 호출하여 모든 사진을 한꺼번에 분석 시킴
+    with st.spinner("구글 Gemini 비전 엔진이 촬영된 모든 사진을 분석 중입니다..."):
         try:
             model = genai.GenerativeModel(model_name="gemini-3.5-flash")
             
@@ -216,8 +228,4 @@ if uploaded_files:
         st.write("• 특이사항: 데이터베이스 내 일치하는 위해 규제 이력이 존재하지 않습니다.")
         st.info("**검사원 조치 의견:** 금지 성분 및 DB 매칭 내역 없으므로 **통관 허용** 처리합니다.")
 
-    # 🚨 [다음 물품 판정 버튼] 판정이 모두 끝난 뒤 완전히 초기화하고 대기 상태로 복귀
-    st.markdown("---")
-    if st.button("🔄 다음 물품 판정하기 (화면 초기화)", use_container_width=True, type="primary"):
-        st.session_state["uploader_id"] += 1
-        st.rerun()
+    #
