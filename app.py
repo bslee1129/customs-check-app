@@ -58,9 +58,25 @@ else:
     img_src = "https://raw.githubusercontent.com/bslee1129/customs-check-app/main/Emblem_of_the_Korea_Customs_Service.svg.png"
 
 st.markdown(f"""
-    <div style="display: flex; align-items: center; gap: 12px; margin-top: 10px; margin-bottom: 5px;">
-        <img src="{img_src}" style="height: 40px; width: auto; object-fit: contain;">
-        <h1 style="margin: 0; padding: 0; font-size: 32px; font-weight: 700; line-height: 1.2;">AI 위해식품 스마트 검사관</h1>
+    <div style="
+        display: flex; 
+        align-items: center; 
+        gap: 10px; 
+        margin-top: 10px; 
+        margin-bottom: 5px;
+        flex-wrap: wrap; /* 모바일에서 공간 부족 시 로고와 제목이 자연스럽게 줄바꿈되도록 설정 */
+    ">
+        <img src="{img_src}" style="height: 32px; width: auto; object-fit: contain; flex-shrink: 0;">
+        <h1 style="
+            margin: 0; 
+            padding: 0; 
+            font-size: calc(18px + 1vw); /* 화면 크기에 따라 글자 크기가 유동적으로 변하는 가변형 폰트 */
+            min-size: 20px;
+            max-size: 28px;
+            font-weight: 700; 
+            line-height: 1.2;
+            word-break: keep-all; /* 단어가 중간에 어설프게 잘리지 않도록 방지 */
+        ">AI 위해식품 스마트 검사관</h1>
     </div>
 """, unsafe_allow_html=True)
 
