@@ -1,5 +1,6 @@
-google-generativeai
+streamlit
 pandas
-openpyxl
 Pillow
 requests
+openpyxl
+google-genai
