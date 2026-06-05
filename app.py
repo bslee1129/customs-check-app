@@ -59,7 +59,7 @@ else:
 
 st.markdown(f"""
     <div style="display: flex; align-items: center; gap: 12px; margin-top: 10px; margin-bottom: 5px;">
-        <img src="{img_src}" style="height: 42px; width: auto; object-fit: contain;">
+        <img src="{img_src}" style="height: 40px; width: auto; object-fit: contain;">
         <h1 style="margin: 0; padding: 0; font-size: 32px; font-weight: 700; line-height: 1.2;">AI 위해식품 스마트 검사관</h1>
     </div>
 """, unsafe_allow_html=True)
