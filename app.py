@@ -580,7 +580,7 @@ if uploaded_files:
             "match_type": match_type,
             "decision_situation": decision_situation,
             "is_ingredient_only_match": is_ingredient_only_match,
-            "is_ambiguous_multilingual =": is_ambiguous_multilingual,
+            "is_ambiguous_multilingual": is_ambiguous_multilingual,  # [수정완료] 등호 제거됨
             "matched_ingredient_str": matched_ingredient_str,
         }
         
