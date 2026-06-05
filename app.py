@@ -60,7 +60,7 @@ if os.path.exists(logo_path):
 else:
     img_src = "https://raw.githubusercontent.com/bslee1129/customs-check-app/main/Emblem_of_the_Korea_Customs_Service.svg.png"
 
-# 모바일 화면 반응형 타이틀 적용 (CSS clamp 함수 적용하여 문법 오류 수정)
+# 모바일 화면 반응형 타이틀 적용
 st.markdown(f"""
     <div style="
         display: flex; 
@@ -500,14 +500,15 @@ if uploaded_files:
             user_images.append(src_image)
             ai_contents.append(src_image)
 
+        # JSON 형식이 파이썬에서 깨지지 않도록 무조건 큰따옴표(\")를 쓰도록 지시문 유지
         prompt = (
             "You are an expert Customs Forensic Intelligence OCR engine. Inspect the images carefully.\n"
             "1. Extract ONLY the core, shortest possible product name (e.g., 'EVP 3D') into 'product_name'.\n"
             "2. CRITICAL: Add the FULL product name including ALL flavors, taglines, and modifiers (e.g., 'EVP 3D Sour Candy', 'EVP 3D Tropic Thunder') into the 'multilingual_candidates' array. This is absolutely required for database matching.\n"
             "3. Extract all ingredients comprehensively including sub-ingredients inside parentheses.\n"
             "4. Categorize remarks strictly into: '위해성분 의심', '화학명', '식물명', '일반명', '기타 원료', '확인 불가'.\n\n"
-            "Respond ONLY in a strict JSON format with these exact keys:\n"
-            "{\n  'brand': 'string',\n  'product_name': 'string',\n  'translated_product_name': 'string',\n  'barcode': 'string',\n  'multilingual_candidates': ['string'],\n  'translated_ingredients': [ {'raw_name': 'string', 'ko_name': 'string', 'remark': 'string'} ],\n  'package_features': 'string'\n}"
+            "Respond ONLY in a strict JSON format with these exact keys (Use double quotes for JSON):\n"
+            "{\n  \"brand\": \"string\",\n  \"product_name\": \"string\",\n  \"translated_product_name\": \"string\",\n  \"barcode\": \"string\",\n  \"multilingual_candidates\": [\"string\"],\n  \"translated_ingredients\": [ {\"raw_name\": \"string\", \"ko_name\": \"string\", \"remark\": \"string\"} ],\n  \"package_features\": \"string\"\n}"
         )
         ai_contents.append(prompt)
 
@@ -516,8 +517,22 @@ if uploaded_files:
         status_box.status("🚀 1단계: 구글 Gemini 최신 비전 엔진이 이미지를 판독하고 있습니다...", expanded=True)
         
         try:
-            model = genai.GenerativeModel(model_name="gemini-1.5-flash")
-            response = model.generate_content(contents=ai_contents, generation_config={"response_mime_type": "application/json"})
+            # [🔥 모델 적용 완료] 사용자가 요청한 최신 안정화 버전 (gemini-3.5-flash) 적용 완료
+            model = genai.GenerativeModel(model_name="gemini-3.5-flash")
+            
+            # 건강기능식품 성분명이 구글 유해성 필터에 차단되지 않도록 안전 설정 전면 해제 유지
+            safety_settings = [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            ]
+            
+            response = model.generate_content(
+                contents=ai_contents, 
+                generation_config={"response_mime_type": "application/json"},
+                safety_settings=safety_settings
+            )
             
             clean_json_str = response.text.replace('```json', '').replace('```', '')
             ocr_result = json.loads(clean_json_str)
