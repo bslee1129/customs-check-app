@@ -60,7 +60,7 @@ if os.path.exists(logo_path):
 else:
     img_src = "https://raw.githubusercontent.com/bslee1129/customs-check-app/main/Emblem_of_the_Korea_Customs_Service.svg.png"
 
-# 모바일 화면 반응형 타이틀 적용
+# 모바일 화면 반응형 타이틀 적용 (CSS clamp 함수 적용하여 문법 오류 수정)
 st.markdown(f"""
     <div style="
         display: flex; 
@@ -74,9 +74,7 @@ st.markdown(f"""
         <h1 style="
             margin: 0; 
             padding: 0; 
-            font-size: calc(18px + 1vw); 
-            min-size: 20px;
-            max-size: 28px;
+            font-size: clamp(20px, 18px + 1vw, 28px); 
             font-weight: 700; 
             line-height: 1.2;
             word-break: keep-all;
@@ -336,7 +334,7 @@ for idx, data in enumerate(st.session_state["history"]):
             st.info("❌ **대조할 DB 원본 사진이 없습니다.**")
 
 # ------------------------------------------------------------
-# 📧 검사 결과 리포트 상세 내용 발송 (전면 개편)
+# 📧 검사 결과 리포트 상세 내용 발송
 # ------------------------------------------------------------
 if st.session_state["history"]:
     st.markdown("---")
@@ -355,7 +353,6 @@ if st.session_state["history"]:
                 target_email = f"{email_id.strip()}@korea.kr"
                 with st.spinner(f"'{target_email}' 주소로 상세 리포트를 전송 중입니다..."):
                     
-                    # 1. 메일 기본 골격 및 헤더 작성
                     html_content = f"""
                     <div style="font-family: 'Malgun Gothic', sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: auto;">
                         <h2 style="color: #004d99; border-bottom: 2px solid #004d99; padding-bottom: 5px;">
@@ -364,7 +361,6 @@ if st.session_state["history"]:
                         <p style="font-size: 14px;">본 리포트에는 현장 검사 앱에서 분석한 <b>총 {len(st.session_state["history"])}건</b>의 검사 기록 전체가 포함되어 있습니다.</p>
                     """
                     
-                    # 2. 각 기록을 순회하며 모든 내용 HTML 구성
                     for i, item in enumerate(st.session_state["history"]):
                         decision = item['decision_situation']
                         if decision == "금지": decision_badge = "<span style='color: white; background-color: #fa5252; padding: 4px 8px; border-radius: 4px;'>🔴 반입 금지</span>"
@@ -397,7 +393,6 @@ if st.session_state["history"]:
                             </ul>
                         """
                         
-                        # 번역된 성분표 테이블 삽입
                         if item.get('translated_ingredients'):
                             html_content += f"<h4 style='margin-bottom: 5px; color: #0056b3;'>▶ 성분 번역 결과 (총 {len(item['translated_ingredients'])}개)</h4>"
                             html_content += "<table style='width:100%; border-collapse: collapse; font-size: 13px; text-align: left; margin-bottom: 15px;'>"
@@ -408,7 +403,6 @@ if st.session_state["history"]:
                                 html_content += f"<tr><td style='padding: 8px; border: 1px solid #dee2e6;'>{ing.get('raw_name', '')}</td><td style='padding: 8px; border: 1px solid #dee2e6;'><b>{ing.get('ko_name', '')}</b></td><td style='padding: 8px; border: 1px solid #dee2e6;'>{rem}</td></tr>"
                             html_content += "</table>"
                             
-                        # DB 상세 내역 삽입
                         html_content += "<h4 style='margin-bottom: 5px; color: #0056b3;'>3. 불법의약품DB 상세 정보</h4>"
                         if item.get('matched_row') is not None:
                             html_content += f"""
@@ -424,7 +418,6 @@ if st.session_state["history"]:
                         else:
                             html_content += "<p style='font-size: 13px; color: #495057;'>특이사항: 데이터베이스 내 일치하는 위해 규제 이력이 존재하지 않습니다.</p>"
                         
-                        # 조치 가이드 삽입
                         guide_text = ""
                         if decision == "금지": guide_text = "<b>1. 통관 보류 및 유치 절차 전환</b><br><b>2. 유치 사유 기록 (위 DB 정보 연동)</b><br><b>3. 현품 및 증빙(사진) 확보 유지</b>"
                         elif decision == "제한A": guide_text = "<b>1. 즉시 승인 금지 (성분 기반 위해 가능성 확인)</b><br><b>2. 분석의뢰 절차 검토 요망</b>"
@@ -465,7 +458,6 @@ if st.session_state["history"]:
                     else:
                         time.sleep(1)
                         st.info(f"💡 **(안내)** 시스템 우측 하단 `Manage app -> Settings -> Secrets`에 Gmail SMTP 정보를 등록해 주세요.")
-
 
 # ------------------------------------------------------------
 # 🆕 초고속 업로드 및 실시간 렌더링 엔진 (투 페이즈)
@@ -524,7 +516,7 @@ if uploaded_files:
         status_box.status("🚀 1단계: 구글 Gemini 최신 비전 엔진이 이미지를 판독하고 있습니다...", expanded=True)
         
         try:
-            model = genai.GenerativeModel(model_name="gemini-3.5-flash")
+            model = genai.GenerativeModel(model_name="gemini-1.5-flash")
             response = model.generate_content(contents=ai_contents, generation_config={"response_mime_type": "application/json"})
             
             clean_json_str = response.text.replace('```json', '').replace('```', '')
