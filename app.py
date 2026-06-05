@@ -10,6 +10,9 @@ import time
 import re
 import os
 import base64
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # [보안] 정부 서버 SSL 인증서 미인증 경고 문구 출력 방지
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -57,7 +60,7 @@ if os.path.exists(logo_path):
 else:
     img_src = "https://raw.githubusercontent.com/bslee1129/customs-check-app/main/Emblem_of_the_Korea_Customs_Service.svg.png"
 
-# [수정] 모바일 화면 반응형 타이틀 적용 (flex-wrap 및 가변 폰트)
+# 모바일 화면 반응형 타이틀 적용 (flex-wrap 및 가변 폰트)
 st.markdown(f"""
     <div style="
         display: flex; 
@@ -81,7 +84,7 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# 🚨 직관적인 촬영 지시문 가이드로 캡션 업데이트
+# 직관적인 촬영 지시문 가이드로 캡션 업데이트
 st.caption("💡 **[촬영 가이드]** 제품의 **전면, 후면, 성분표, 바코드**가 선명하게 보이도록 여러 장을 한 번에 올려주세요. (검사 기록은 삭제되지 않고 화면 아래로 계속 누적됩니다.)")
 
 # API 키 설정
@@ -324,21 +327,24 @@ for idx, data in enumerate(st.session_state["history"]):
 - 본 판정은 보조 판단이며, 실제 통관 허용 여부는 현장 세관공무원의 요건 확인에 따름.
 """, unsafe_allow_html=True)
 
+    st.markdown("---")
+    st.markdown("### 🔍 [현장 촬영 사진 확인 및 교차 검증]")
+    
+    st.info("📸 내가 촬영한 현품 사진")
+    if user_images:
+        user_cols = st.columns(len(user_images))
+        for u_idx, u_img in enumerate(user_images):
+            with user_cols[u_idx]:
+                st.image(u_img, use_container_width=True)
+    else:
+        st.write("첨부된 사진이 없습니다.")
+
+    st.markdown("<hr style='margin: 25px 0; border-top: 2px solid #007bff;'>", unsafe_allow_html=True)
+    
     if matched_row is not None and decision_situation != "제한B":
         url_data = str(matched_row.get('원본이미지URL', ''))
         if url_data and url_data.lower() != 'nan' and url_data.strip():
-            st.markdown("---")
-            st.markdown("### 🔍 [현장 교차 검증] 사진 비교 대조")
-            
-            st.info("📸 내가 촬영한 현품 사진")
-            user_cols = st.columns(len(user_images))
-            for u_idx, u_img in enumerate(user_images):
-                with user_cols[u_idx]:
-                    st.image(u_img, use_container_width=True)
-            
-            st.markdown("<hr style='margin: 25px 0; border-top: 2px solid #007bff;'>", unsafe_allow_html=True)
-            st.warning("🔗 DB 등록 원본 이미지")
-            
+            st.warning("🔗 DB 등록 원본 이미지 (비교 대조용)")
             urls = [u.strip() for u in url_data.split(',') if u.strip()]
             db_cols = st.columns(len(urls))
             
@@ -364,19 +370,92 @@ for idx, data in enumerate(st.session_state["history"]):
                         except: pass
                         if not success: time.sleep(0.5)
         else:
-            st.markdown("---")
-            st.markdown("### 🔍 [현장 교차 검증] 사진 비교 대조")
-            st.info("📸 내가 촬영한 현품 사진")
-            user_cols = st.columns(len(user_images))
-            for u_idx, u_img in enumerate(user_images):
-                with user_cols[u_idx]:
-                    st.image(u_img, use_container_width=True)
-            st.markdown("<hr style='margin: 25px 0; border-top: 2px solid #007bff;'>", unsafe_allow_html=True)
-            st.info("❌ **DB에 등록된 원본 사진이 없습니다.**")
+            st.info("❌ **해당 위해물품은 DB에 등록된 원본 사진이 없습니다.**")
+    else:
+        if decision_situation == "승인":
+            st.success("✅ **통관 가능 (안전 물품)으로 판정되어 대조할 DB 위해사진이 없습니다.**")
+        else:
+            st.info("❌ **대조할 DB 원본 사진이 없습니다.**")
+
+# ------------------------------------------------------------
+# 📧 검사 결과 리포트 공직자 통합메일 발송 기능
+# ------------------------------------------------------------
+if st.session_state["history"]:
+    st.markdown("---")
+    with st.expander("📧 검사 결과 리포트 메일로 전송하기 (공직자 통합메일)"):
+        st.write("누적된 전체 검사 결과를 `@korea.kr` 메일 주소로 발송합니다.")
+        
+        m_col1, m_col2 = st.columns([3, 1])
+        with m_col1:
+            email_id = st.text_input("아이디 입력", placeholder="예: user123", label_visibility="collapsed")
+        with m_col2:
+            st.markdown("<div style='margin-top: 10px; font-weight: bold; font-size: 16px;'>@korea.kr</div>", unsafe_allow_html=True)
+            
+        if st.button("📤 메일 발송", use_container_width=True):
+            if not email_id.strip():
+                st.warning("메일 아이디를 입력해주세요.")
+            else:
+                target_email = f"{email_id.strip()}@korea.kr"
+                
+                with st.spinner(f"'{target_email}' 주소로 리포트를 전송 중입니다..."):
+                    # HTML 본문 생성
+                    html_content = f"""
+                    <div style="font-family: sans-serif; line-height: 1.6; color: #333;">
+                        <h2 style="color: #004d99; border-bottom: 2px solid #004d99; padding-bottom: 5px;">
+                            AI 위해식품 스마트 검사 결과 리포트
+                        </h2>
+                        <p>총 <b>{len(st.session_state["history"])}건</b>의 현장 검사 기록이 첨부되었습니다.</p>
+                    """
+                    
+                    for i, item in enumerate(st.session_state["history"]):
+                        html_content += f"""
+                        <div style="background-color: #f8f9fa; padding: 15px; margin-bottom: 15px; border-radius: 8px; border: 1px solid #ddd;">
+                            <h3 style="margin-top: 0; color: #333;">[검사 #{i+1}] {item['product_name']}</h3>
+                            <ul style="list-style-type: none; padding-left: 0;">
+                                <li><b>식별 브랜드:</b> {item['brand']}</li>
+                                <li><b>바코드 정보:</b> {item['barcode']}</li>
+                                <li><b>판정 결과:</b> <span style="color: #d93025; font-weight: bold;">{item['decision_situation']}</span></li>
+                                <li><b>DB 매칭 상태:</b> {item['match_type']}</li>
+                            </ul>
+                        </div>
+                        """
+                    html_content += "<p style='font-size: 12px; color: #777;'>본 메일은 AI 위해식품 스마트 검사관 시스템에서 자동 발송되었습니다.</p></div>"
+                    
+                    # 실제 SMTP 발송 연동부
+                    # (안내: 실제 발송을 위해 Streamlit Secrets에 발신용 메일 계정 설정이 필요합니다)
+                    smtp_server = st.secrets.get("SMTP_SERVER", "")
+                    smtp_user = st.secrets.get("SMTP_USER", "")
+                    smtp_pass = st.secrets.get("SMTP_PASSWORD", "")
+                    smtp_port = st.secrets.get("SMTP_PORT", 587)
+                    
+                    if smtp_server and smtp_user and smtp_pass:
+                        try:
+                            msg = MIMEMultipart()
+                            msg['From'] = smtp_user
+                            msg['To'] = target_email
+                            msg['Subject'] = f"[현장보고] AI 스마트 검사관 누적 결과 ({len(st.session_state['history'])}건)"
+                            msg.attach(MIMEText(html_content, 'html'))
+                            
+                            server = smtplib.SMTP(smtp_server, smtp_port)
+                            server.starttls()
+                            server.login(smtp_user, smtp_pass)
+                            server.send_message(msg)
+                            server.quit()
+                            
+                            st.success(f"✅ 성공적으로 **{target_email}**로 리포트를 발송했습니다.")
+                        except Exception as e:
+                            st.error(f"❌ 메일 발송 중 오류가 발생했습니다: {e}")
+                    else:
+                        time.sleep(1) # 시뮬레이션 지연
+                        st.info(f"""
+                        💡 **(안내)** 현재 내부 테스트 모드입니다.  
+                        요청하신 **{target_email}**로 발송할 데이터 포맷이 정상적으로 생성되었습니다.  
+                        실제 발송을 활성화하시려면 시스템 우측 하단 `Manage app -> Settings -> Secrets`에 SMTP 서버 정보(`SMTP_SERVER`, `SMTP_USER`, `SMTP_PASSWORD`)를 등록해 주세요.
+                        """)
 
 
 # ------------------------------------------------------------
-# 🆕 새로운 업로드 창 (하단 배치 및 실시간 1,2번 우선 로드 결합 엔진)
+# 🆕 새로운 업로드 창 및 실시간 대조 엔진
 # ------------------------------------------------------------
 st.markdown("---")
 
@@ -401,7 +480,6 @@ if uploaded_files:
     st.info(f"📁 {len(uploaded_files)}장의 새 화물 사진이 접수되었습니다.")
     if st.button("🔍 위해물품 통합 분석 시작", type="primary", use_container_width=True):
         
-        # [체감 대기 단축을 위한 빈 박스(레이아웃) 사전 생성 기법]
         status_box = st.empty()       
         decision_box = st.empty()     
         info_col_box = st.empty()     
@@ -428,7 +506,6 @@ if uploaded_files:
 
         brand, product_name, translated_product_name, barcode, translated_ingredients, package_features, multilingual_candidates = '확인 불가', '확인 불가', '', '바코드 확인 불가', [], '', []
         
-        # STEP 1: 고비용 연산 시작 알림
         status_box.status("🚀 1단계: 구글 Gemini 최신 비전 엔진이 이미지를 판독하고 있습니다...", expanded=True)
         
         try:
@@ -448,7 +525,6 @@ if uploaded_files:
         except Exception as e:
             st.error(f"비전 엔진 통합 판독 중 예외 발생: {e}")
 
-        # STEP 2: 매칭 연산 즉시 실행 및 1, 2번 데이터 프론트엔드 선제 표출
         status_box.status("🔍 2단계: 위해 의약품 DB와 교차 검증을 대조하고 있습니다...", expanded=True)
         
         matched_row = None
@@ -512,7 +588,6 @@ if uploaded_files:
                         match_type = "5순위 상세 기재내역 매칭"
                         break
 
-        # 위험 유치 타겟 판정 
         decision_situation = "승인"
         is_high_risk_ingredient = False
         
@@ -532,7 +607,6 @@ if uploaded_files:
         else:
             decision_situation = "승인"
 
-        # 후속 복잡 연산(렌더링) 이전에 화면의 상단 빈칸에 1차 가용 정보 전면 표출
         if decision_situation == "금지":
             decision_box.error("결과: 🔴 반입 금지")
             match_badge = 'background-color: #fff5f5; color: #fa5252; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;'
@@ -548,7 +622,6 @@ if uploaded_files:
 
         reg_num = str(matched_row['등록번호']).split('.')[0] if matched_row is not None and '등록번호' in matched_row and pd.notna(matched_row['등록번호']) else "등록번호 확인 불가"
 
-        # 사용자가 즉시 결과를 볼 수 있도록 플레이스홀더 영역에 드로잉 강제 주입
         with info_col_box.container():
             col1, col2 = st.columns(2)
             with col1:
@@ -566,7 +639,6 @@ if uploaded_files:
                 * DB 매칭 상태: <span style="{match_badge}">{display_match_text}</span>
                 """, unsafe_allow_html=True)
 
-        # STEP 3: 백그라운드 데이터 최종 빌드 및 완료
         status_box.status("⚡ 3단계: 성분 번역 맵 구축 및 조치 표준 가이드를 통합 매핑 중입니다...", expanded=True)
         
         report_data = {
@@ -580,7 +652,7 @@ if uploaded_files:
             "match_type": match_type,
             "decision_situation": decision_situation,
             "is_ingredient_only_match": is_ingredient_only_match,
-            "is_ambiguous_multilingual": is_ambiguous_multilingual,  # [수정완료] 등호 제거됨
+            "is_ambiguous_multilingual": is_ambiguous_multilingual,
             "matched_ingredient_str": matched_ingredient_str,
         }
         
