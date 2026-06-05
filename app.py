@@ -507,10 +507,11 @@ if uploaded_files:
             user_images.append(src_image)
             ai_contents.append(src_image)
 
+# 지시문에서 EVP 3D라는 단어를 완전히 빼고 다른 예시로 교체했습니다.
         prompt = (
             "You are an expert Customs Forensic Intelligence OCR engine. Inspect the images carefully.\n"
-            "1. Extract ONLY the core, shortest possible product name (e.g., 'EVP 3D') into 'product_name'.\n"
-            "2. CRITICAL: Add the FULL product name including ALL flavors, taglines, and modifiers (e.g., 'EVP 3D Sour Candy', 'EVP 3D Tropic Thunder') into the 'multilingual_candidates' array. This is absolutely required for database matching.\n"
+            "1. Extract ONLY the core, shortest possible product name (e.g., 'SuperPump Max') into 'product_name'.\n"
+            "2. CRITICAL: Add the FULL product name including ALL flavors, taglines, and modifiers (e.g., 'SuperPump Max Blue Raspberry', 'SuperPump Max Fruit Punch') into the 'multilingual_candidates' array. This is absolutely required for database matching.\n"
             "3. Extract all ingredients comprehensively including sub-ingredients inside parentheses.\n"
             "4. Categorize remarks strictly into: '위해성분 의심', '화학명', '식물명', '일반명', '기타 원료', '확인 불가'.\n\n"
             "Respond ONLY in a strict JSON format with these exact keys (Use double quotes for JSON):\n"
