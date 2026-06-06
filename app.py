@@ -13,6 +13,10 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+# [에러 로깅용 모듈 추가]
+import traceback
+import datetime
+
 # [최신 규격] 구글 최신 라이브러리 규격
 from google import genai
 from google.genai import types
@@ -94,7 +98,10 @@ if gemini_key:
     try:
         client = genai.Client(api_key=gemini_key)
     except Exception as e:
+        error_details = traceback.format_exc()
         st.error(f"API 키 설정 중 오류가 발생했습니다: {e}")
+        with open("error_log.txt", "a", encoding="utf-8") as f:
+            f.write(f"\n{'='*50}\n[API KEY ERROR] {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{error_details}")
 else:
     st.error("⚠️ 오른쪽 하단 Manage app -> Settings -> Secrets에 GEMINI_API_KEY를 등록해 주세요.")
 
@@ -172,7 +179,10 @@ def load_and_standardize_db():
             
         return df
     except Exception as e:
+        error_details = traceback.format_exc()
         st.error(f"데이터베이스 파일 로드 및 구조 분석 실패: {e}")
+        with open("error_log.txt", "a", encoding="utf-8") as f:
+            f.write(f"\n{'='*50}\n[DB LOAD ERROR] {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{error_details}")
         return None
 
 df_db = load_and_standardize_db()
@@ -463,7 +473,10 @@ if st.session_state["history"]:
                             server.quit()
                             st.success(f"✅ 성공적으로 **{target_email}**로 전체 상세 리포트를 발송했습니다.")
                         except Exception as e:
+                            error_details = traceback.format_exc()
                             st.error(f"❌ 메일 발송 중 오류가 발생했습니다: {e}")
+                            with open("error_log.txt", "a", encoding="utf-8") as f:
+                                f.write(f"\n{'='*50}\n[EMAIL SEND ERROR] {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{error_details}")
                     else:
                         time.sleep(1)
                         st.info(f"💡 **(안내)** 시스템 우측 하단 `Manage app -> Settings -> Secrets`에 Gmail SMTP 정보를 등록해 주세요.")
@@ -509,7 +522,7 @@ if uploaded_files:
             user_images.append(src_image)
             ai_contents.append(src_image)
 
-        # [🔥 EVP 3D 누락 해결을 위해 예시 단어 교체]
+        # JSON 형식이 파이썬에서 깨지지 않도록 무조건 큰따옴표(\")를 쓰도록 지시문 유지
         prompt = (
             "You are an expert Customs Forensic Intelligence OCR engine. Inspect the images carefully.\n"
             "1. Extract ONLY the core, shortest possible product name (e.g., 'SuperPump Max') into 'product_name'.\n"
@@ -554,8 +567,16 @@ if uploaded_files:
             translated_ingredients = ocr_result.get('translated_ingredients', [])
             package_features = ocr_result.get('package_features', '')
             multilingual_candidates = ocr_result.get('multilingual_candidates', [])
+            
         except Exception as e:
-            st.error(f"비전 엔진 통합 판독 중 예외 발생: {e}")
+            # [🔥 에러 로깅 추가] 에러 발생 시 파일 저장 및 화면에 상세 내역 펼침창 제공
+            error_details = traceback.format_exc()
+            st.error(f"⚠️ 비전 엔진 통합 판독 중 예외 발생: {e}")
+            with st.expander("🛠️ 상세 오류 내역 보기 (디버깅용)"):
+                st.code(error_details, language="python")
+            with open("error_log.txt", "a", encoding="utf-8") as f:
+                f.write(f"\n{'='*50}\n[VISION AI ERROR] {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{error_details}")
+            st.stop() # 에러 시 무리하게 2단계를 진행하지 않고 즉시 중단
 
         with info_col_box.container():
             col1, col2 = st.columns(2)
