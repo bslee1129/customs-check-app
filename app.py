@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import json
-import google.generativeai as genai
 from PIL import Image
 import requests
 import io
@@ -10,6 +9,13 @@ import time
 import re
 import os
 import base64
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+# [최신 규격] 구글 최신 라이브러리 규격
+from google import genai
+from google.genai import types
 
 # [보안] 정부 서버 SSL 인증서 미인증 경고 문구 출력 방지
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -57,7 +63,7 @@ if os.path.exists(logo_path):
 else:
     img_src = "https://raw.githubusercontent.com/bslee1129/customs-check-app/main/Emblem_of_the_Korea_Customs_Service.svg.png"
 
-# [수정] 모바일 화면 반응형 타이틀 적용 (flex-wrap 및 가변 폰트)
+# 모바일 화면 반응형 타이틀 적용 
 st.markdown(f"""
     <div style="
         display: flex; 
@@ -71,9 +77,7 @@ st.markdown(f"""
         <h1 style="
             margin: 0; 
             padding: 0; 
-            font-size: calc(18px + 1vw); 
-            min-size: 20px;
-            max-size: 28px;
+            font-size: clamp(20px, 18px + 1vw, 28px); 
             font-weight: 700; 
             line-height: 1.2;
             word-break: keep-all;
@@ -81,17 +85,19 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# 🚨 직관적인 촬영 지시문 가이드로 캡션 업데이트
-st.caption("💡 **[촬영 가이드]** 제품의 **전면, 후면, 성분표, 바코드**가 선명하게 보이도록 여러 장을 한 번에 올려주세요. (검사 기록은 삭제되지 않고 화면 아래로 계속 누적됩니다.)")
+st.caption("💡 **[촬영 가이드]** 제품의 **전면, 후면, 성분표, 바코드**가 선명하게 보이도록 여러 장을 한 번에 올려주세요. (검사 기록은 계속 누적됩니다.)")
 
-# API 키 설정
+# 최신 Client 객체 방식의 API 연결 설정
 gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+client = None
 if gemini_key:
-    genai.configure(api_key=gemini_key)
+    try:
+        client = genai.Client(api_key=gemini_key)
+    except Exception as e:
+        st.error(f"API 키 설정 중 오류가 발생했습니다: {e}")
 else:
     st.error("⚠️ 오른쪽 하단 Manage app -> Settings -> Secrets에 GEMINI_API_KEY를 등록해 주세요.")
 
-# 이전 결과를 저장하는 히스토리 배열 생성
 if "history" not in st.session_state:
     st.session_state["history"] = []
 if "uploader_id" not in st.session_state:
@@ -105,7 +111,7 @@ def normalize_product_name(text):
     noise_patterns = [
         r'fruit\s*punch', r'blue\s*raz', r'sour\s*candy',
         r'\d+g', r'\d+\.?\d*oz', r'\d+\s*capsules', r'\d+\s*tablets', r'\d+\s*servings',
-        r'capsules', r'tablets', r'powder', r'錠', r'カプセル', r'顆粒', r'液', r'정제', r'캡슐', r'과립', r'액제'
+        r'capsules', r'tablets', r'powder', r'錠', r'カプセル', r'顆粒', r'액제', r'정제', r'캡슐', r'과립'
     ]
     for pattern in noise_patterns:
         val = re.sub(pattern, '', val)
@@ -171,12 +177,13 @@ def load_and_standardize_db():
 
 df_db = load_and_standardize_db()
 
-# 기존 검사 기록(History)을 모두 화면 상단에 반복해서 출력
+# ------------------------------------------------------------
+# 기존 검사 기록 화면 출력 (상단 누적부)
+# ------------------------------------------------------------
 for idx, data in enumerate(st.session_state["history"]):
     st.markdown("---")
     st.markdown(f"## 📦 [검사 기록 #{idx+1}] {data['product_name'] if data['product_name'] != '확인 불가' else '미상 물품'}")
     
-    # 데이터 추출
     user_images = data["user_images"]
     brand = data["brand"]
     product_name = data["product_name"]
@@ -219,11 +226,7 @@ for idx, data in enumerate(st.session_state["history"]):
         * 식별된 바코드: <span style="background-color: #f1f3f5; color: #495057; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{barcode}</span>
         """, unsafe_allow_html=True)
     with col2:
-        if matched_row is not None and '등록번호' in matched_row and pd.notna(matched_row['등록번호']):
-            reg_num = str(matched_row['등록번호']).split('.')[0]
-        else:
-            reg_num = "등록번호 확인 불가"
-            
+        reg_num = str(matched_row['등록번호']).split('.')[0] if matched_row is not None and '등록번호' in matched_row and pd.notna(matched_row['등록번호']) else "등록번호 확인 불가"
         display_match_text = f"🔴 [{match_type}] 위해물품 확정" if "🔴" in match_badge or decision_situation=="금지" else f"⚠️ [{match_type}] 확인 요망"
         if decision_situation == "승인": display_match_text = "🟢 DB 규제 내역 없음"
         if decision_situation == "제한B": display_match_text = "⚠️ 현품 정보 식별 불가"
@@ -251,21 +254,13 @@ for idx, data in enumerate(st.session_state["history"]):
                 if not rem or rem.lower() == 'nan': rem = '일반명'
                 
                 if "위해" in rem or "의심" in rem:
-                    row_bg = "#fff5f5"
-                    badge_style = "background-color: #ffe3e3; color: #fa5252; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 12px;"
-                    display_rem = f"🚨 {rem}"
+                    row_bg, badge_style, display_rem = "#fff5f5", "background-color: #ffe3e3; color: #fa5252; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 12px;", f"🚨 {rem}"
                 elif "기타" in rem or "원료" in rem:
-                    row_bg = "#ffffff"
-                    badge_style = "background-color: #f1f3f5; color: #868e96; padding: 2px 6px; border-radius: 4px; font-size: 12px;"
-                    display_rem = f"📦 {rem}"
+                    row_bg, badge_style, display_rem = "#ffffff", "background-color: #f1f3f5; color: #868e96; padding: 2px 6px; border-radius: 4px; font-size: 12px;", f"📦 {rem}"
                 elif "식물" in rem:
-                    row_bg = "#ffffff"
-                    badge_style = "background-color: #ebfbee; color: #2b8a3e; padding: 2px 6px; border-radius: 4px; font-size: 12px;"
-                    display_rem = f"🌿 {rem}"
+                    row_bg, badge_style, display_rem = "#ffffff", "background-color: #ebfbee; color: #2b8a3e; padding: 2px 6px; border-radius: 4px; font-size: 12px;", f"🌿 {rem}"
                 else:
-                    row_bg = "#ffffff"
-                    badge_style = "background-color: #e3fafc; color: #0c8599; padding: 2px 6px; border-radius: 4px; font-size: 12px;"
-                    display_rem = f"⚗️ {rem}"
+                    row_bg, badge_style, display_rem = "#ffffff", "background-color: #e3fafc; color: #0c8599; padding: 2px 6px; border-radius: 4px; font-size: 12px;", f"⚗️ {rem}"
                 
                 table_html += f"<tr style='background-color: {row_bg};'><td style='padding: 6px; border: 1px solid #dee2e6;'>{raw}</td><td style='padding: 6px; border: 1px solid #dee2e6; font-weight: bold;'>{ko}</td><td style='padding: 6px; border: 1px solid #dee2e6; text-align: center;'><span style='{badge_style}'>{display_rem}</span></td></tr>"
             table_html += "</table>"
@@ -303,41 +298,22 @@ for idx, data in enumerate(st.session_state["history"]):
     elif decision_situation == "제한A":
         if is_ingredient_only_match:
             st.warning("⚠️ **제품명/바코드는 DB와 일치하지 않으나, 성분표 내 성분명이 DB의 위해 성분명과 일치하므로 검토 및 정밀검사가 필요합니다.**")
-        st.markdown(f"""
-**1. 즉시 승인 금지**
-- 해당 물품은 “성분 기반 위해 가능성 확인 대상”으로 분류.
-**2. 분석의뢰 검토**
-- 성분 함유 여부가 불명확한 경우 전자통관시스템을 통한 분석의뢰 절차 검토.
-""", unsafe_allow_html=True)
+        st.markdown("**1. 즉시 승인 금지**\n- 해당 물품은 “성분 기반 위해 가능성 확인 대상”으로 분류.\n**2. 분석의뢰 검토**\n- 성분 함유 여부가 불명확한 경우 전자통관시스템을 통한 분석의뢰 절차 검토.", unsafe_allow_html=True)
     elif decision_situation == "제한B":
-        st.markdown(f"""
-**1. 통관 판단 보류 및 재촬영 요청**
-- 흐리거나 정보가 누락된 경우 승인을 단정하지 말고 보완 요청.
-**2. 수기 입력 대체**
-- 라벨 훼손 시 제품명, 바코드 등을 수기로 확인하여 대조.
-""", unsafe_allow_html=True)
+        st.markdown("**1. 통관 판단 보류 및 재촬영 요청**\n- 흐리거나 정보가 누락된 경우 승인을 단정하지 말고 보완 요청.\n**2. 수기 입력 대체**\n- 라벨 훼손 시 제품명, 바코드 등을 수기로 확인하여 대조.", unsafe_allow_html=True)
     elif decision_situation == "승인":
-        st.markdown(f"""
-**1. 수량 및 자가사용 기준 확인**
-- 건강기능식품 및 의약품 자가사용 목적 인정 범위(원칙적 6병 이내) 확인.
-**2. 최종 안내**
-- 본 판정은 보조 판단이며, 실제 통관 허용 여부는 현장 세관공무원의 요건 확인에 따름.
-""", unsafe_allow_html=True)
+        st.markdown("**1. 수량 및 자가사용 기준 확인**\n- 건강기능식품 및 의약품 자가사용 목적 인정 범위(원칙적 6병 이내) 확인.\n**2. 최종 안내**\n- 본 판정은 보조 판단이며, 실제 통관 허용 여부는 현장 세관공무원의 요건 확인에 따름.", unsafe_allow_html=True)
 
     st.markdown("---")
     st.markdown("### 🔍 [현장 촬영 사진 확인 및 교차 검증]")
     
-    # 1. 내가 촬영한 사진은 판정 결과와 상관없이 무조건 출력
     st.info("📸 내가 촬영한 현품 사진")
     if user_images:
         user_cols = st.columns(len(user_images))
         for u_idx, u_img in enumerate(user_images):
             with user_cols[u_idx]:
-                st.image(u_img, use_container_width=True)
-    else:
-        st.write("첨부된 사진이 없습니다.")
+                st.image(u_img, width=200)
 
-    # 2. DB 사진은 매칭된 위해물품일 경우에만 하단에 비교 대조용으로 출력
     st.markdown("<hr style='margin: 25px 0; border-top: 2px solid #007bff;'>", unsafe_allow_html=True)
     
     if matched_row is not None and decision_situation != "제한B":
@@ -346,28 +322,18 @@ for idx, data in enumerate(st.session_state["history"]):
             st.warning("🔗 DB 등록 원본 이미지 (비교 대조용)")
             urls = [u.strip() for u in url_data.split(',') if u.strip()]
             db_cols = st.columns(len(urls))
-            
             with requests.Session() as session:
                 session.verify = False
                 session.headers.update({"User-Agent": "Mozilla/5.0"})
                 for idx_url, url in enumerate(urls):
-                    success = False
-                    for attempt in range(3):
-                        try:
-                            res = session.get(url, timeout=10)
-                            if res.status_code == 200:
-                                db_img = Image.open(io.BytesIO(res.content))
-                                if user_images:
-                                    db_img.thumbnail(user_images[0].size)
-                                else:
-                                    db_img.thumbnail((800, 800))
-                                    
-                                with db_cols[idx_url]:
-                                    st.image(db_img, use_container_width=True)
-                                success = True
-                                break
-                        except: pass
-                        if not success: time.sleep(0.5)
+                    try:
+                        res = session.get(url, timeout=2)
+                        if res.status_code == 200:
+                            db_img = Image.open(io.BytesIO(res.content))
+                            db_img.thumbnail((400, 400))
+                            with db_cols[idx_url]:
+                                st.image(db_img, width=200)
+                    except: pass
         else:
             st.info("❌ **해당 위해물품은 DB에 등록된 원본 사진이 없습니다.**")
     else:
@@ -376,9 +342,134 @@ for idx, data in enumerate(st.session_state["history"]):
         else:
             st.info("❌ **대조할 DB 원본 사진이 없습니다.**")
 
+# ------------------------------------------------------------
+# 📧 검사 결과 리포트 상세 내용 발송
+# ------------------------------------------------------------
+if st.session_state["history"]:
+    st.markdown("---")
+    with st.expander("📧 전체 검사 리포트 메일로 전송하기 (공직자 통합메일)"):
+        st.write("누적된 전체 검사 내용(성분, 조치 가이드 포함)을 `@korea.kr` 메일 주소로 발송합니다.")
+        m_col1, m_col2 = st.columns([3, 1])
+        with m_col1:
+            email_id = st.text_input("아이디 입력", placeholder="예: user123", label_visibility="collapsed")
+        with m_col2:
+            st.markdown("<div style='margin-top: 10px; font-weight: bold; font-size: 16px;'>@korea.kr</div>", unsafe_allow_html=True)
+            
+        if st.button("📤 전체 상세 메일 발송", use_container_width=True):
+            if not email_id.strip():
+                st.warning("메일 아이디를 입력해주세요.")
+            else:
+                target_email = f"{email_id.strip()}@korea.kr"
+                with st.spinner(f"'{target_email}' 주소로 상세 리포트를 전송 중입니다..."):
+                    
+                    html_content = f"""
+                    <div style="font-family: 'Malgun Gothic', sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: auto;">
+                        <h2 style="color: #004d99; border-bottom: 2px solid #004d99; padding-bottom: 5px;">
+                            📋 AI 위해식품 스마트 검사 결과 상세 리포트
+                        </h2>
+                        <p style="font-size: 14px;">본 리포트에는 현장 검사 앱에서 분석한 <b>총 {len(st.session_state["history"])}건</b>의 검사 기록 전체가 포함되어 있습니다.</p>
+                    """
+                    
+                    for i, item in enumerate(st.session_state["history"]):
+                        decision = item['decision_situation']
+                        if decision == "금지": decision_badge = "<span style='color: white; background-color: #fa5252; padding: 4px 8px; border-radius: 4px;'>🔴 반입 금지</span>"
+                        elif decision in ["제한A", "제한B"]: decision_badge = "<span style='color: white; background-color: #fab005; padding: 4px 8px; border-radius: 4px;'>⚠️ 제한 - 정밀 확인 필요</span>"
+                        else: decision_badge = "<span style='color: white; background-color: #40c057; padding: 4px 8px; border-radius: 4px;'>🟢 통관 가능</span>"
+                        
+                        reg_num = str(item['matched_row']['등록번호']).split('.')[0] if item.get('matched_row') is not None and '등록번호' in item['matched_row'] and pd.notna(item['matched_row']['등록번호']) else "확인 불가"
+                        
+                        html_content += f"""
+                        <div style="background-color: #ffffff; padding: 20px; margin-bottom: 25px; border-radius: 8px; border: 1px solid #ced4da; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                            <h3 style="margin-top: 0; color: #212529; border-bottom: 1px solid #dee2e6; padding-bottom: 10px;">
+                                [검사 #{i+1}] {item['product_name']}
+                            </h3>
+                            <div style="margin-bottom: 15px;">
+                                <b>판정 결과:</b> {decision_badge}
+                            </div>
+                            
+                            <h4 style="margin-bottom: 5px; color: #0056b3;">1. OCR 분석 정보</h4>
+                            <ul style="background-color: #f8f9fa; padding: 10px 10px 10px 30px; border-radius: 4px;">
+                                <li><b>브랜드:</b> {item['brand']}</li>
+                                <li><b>제품명:</b> {item['product_name']}</li>
+                                <li><b>번역명:</b> {item['translated_product_name'] if item['translated_product_name'] else '해당없음'}</li>
+                                <li><b>바코드:</b> {item['barcode']}</li>
+                            </ul>
+
+                            <h4 style="margin-bottom: 5px; color: #0056b3;">2. DB 대조 결과</h4>
+                            <ul style="background-color: #f8f9fa; padding: 10px 10px 10px 30px; border-radius: 4px;">
+                                <li><b>등록번호:</b> {reg_num}</li>
+                                <li><b>DB 매칭 상태:</b> {item['match_type']}</li>
+                            </ul>
+                        """
+                        
+                        if item.get('translated_ingredients'):
+                            html_content += f"<h4 style='margin-bottom: 5px; color: #0056b3;'>▶ 성분 번역 결과 (총 {len(item['translated_ingredients'])}개)</h4>"
+                            html_content += "<table style='width:100%; border-collapse: collapse; font-size: 13px; text-align: left; margin-bottom: 15px;'>"
+                            html_content += "<tr style='background-color: #e9ecef;'><th style='padding: 8px; border: 1px solid #dee2e6;'>원문 성분명</th><th style='padding: 8px; border: 1px solid #dee2e6;'>한글 번역명</th><th style='padding: 8px; border: 1px solid #dee2e6;'>비고</th></tr>"
+                            for ing in item['translated_ingredients']:
+                                rem = str(ing.get('remark', '')).strip()
+                                if not rem or rem.lower() == 'nan': rem = '일반명'
+                                html_content += f"<tr><td style='padding: 8px; border: 1px solid #dee2e6;'>{ing.get('raw_name', '')}</td><td style='padding: 8px; border: 1px solid #dee2e6;'><b>{ing.get('ko_name', '')}</b></td><td style='padding: 8px; border: 1px solid #dee2e6;'>{rem}</td></tr>"
+                            html_content += "</table>"
+                            
+                        html_content += "<h4 style='margin-bottom: 5px; color: #0056b3;'>3. 불법의약품DB 상세 정보</h4>"
+                        if item.get('matched_row') is not None:
+                            html_content += f"""
+                            <ul style="background-color: #f8f9fa; padding: 10px 10px 10px 30px; border-radius: 4px; font-size: 13px;">
+                                <li><b>제품명(DB):</b> {get_clean_db_value(item['matched_row'], '제품명')}</li>
+                                <li><b>성분명(DB):</b> {get_clean_db_value(item['matched_row'], '성분명')}</li>
+                                <li><b>정보 출처:</b> {get_clean_db_value(item['matched_row'], '정보출처')}</li>
+                                <li><b>통관보류사유:</b> {get_clean_db_value(item['matched_row'], '통관보류사유내용')}</li>
+                                <li><b>상세 내용:</b> {get_clean_db_value(item['matched_row'], '상세내용')}</li>
+                                <li><b>관련 근거:</b> {get_clean_db_value(item['matched_row'], '관련근거')}</li>
+                            </ul>
+                            """
+                        else:
+                            html_content += "<p style='font-size: 13px; color: #495057;'>특이사항: 데이터베이스 내 일치하는 위해 규제 이력이 존재하지 않습니다.</p>"
+                        
+                        guide_text = ""
+                        if decision == "금지": guide_text = "<b>1. 통관 보류 및 유치 절차 전환</b><br><b>2. 유치 사유 기록 (위 DB 정보 연동)</b><br><b>3. 현품 및 증빙(사진) 확보 유지</b>"
+                        elif decision == "제한A": guide_text = "<b>1. 즉시 승인 금지 (성분 기반 위해 가능성 확인)</b><br><b>2. 분석의뢰 절차 검토 요망</b>"
+                        elif decision == "제한B": guide_text = "<b>1. 통관 판단 보류 및 정보 보완(재촬영) 요청</b><br><b>2. 현품 수기 확인 대조 필수</b>"
+                        elif decision == "승인": guide_text = "<b>1. 수량 및 자가사용 목적(6병 이내 등) 기준 확인</b><br><b>2. 세관공무원 최종 요건 확인 후 승인 처리</b>"
+                        
+                        html_content += f"""
+                            <h4 style="margin-bottom: 5px; color: #0056b3;">4. 현장 조치 가이드</h4>
+                            <div style="background-color: #e3fafc; padding: 10px; border-radius: 4px; font-size: 14px; border-left: 4px solid #0c8599;">
+                                {guide_text}
+                            </div>
+                        </div>
+                        """
+                        
+                    html_content += "<hr><p style='font-size: 12px; color: #868e96; text-align: center;'>본 메일은 AI 위해식품 스마트 검사관 시스템에서 자동 발송되었습니다.</p></div>"
+                    
+                    smtp_server = st.secrets.get("SMTP_SERVER", "")
+                    smtp_user = st.secrets.get("SMTP_USER", "")
+                    smtp_pass = st.secrets.get("SMTP_PASSWORD", "")
+                    smtp_port = st.secrets.get("SMTP_PORT", 587)
+                    
+                    if smtp_server and smtp_user and smtp_pass:
+                        try:
+                            msg = MIMEMultipart()
+                            msg['From'] = smtp_user
+                            msg['To'] = target_email
+                            msg['Subject'] = f"[현장보고] AI 스마트 검사관 누적 결과 및 조치사항 ({len(st.session_state['history'])}건)"
+                            msg.attach(MIMEText(html_content, 'html'))
+                            
+                            server = smtplib.SMTP(smtp_server, smtp_port)
+                            server.starttls()
+                            server.login(smtp_user, smtp_pass)
+                            server.send_message(msg)
+                            server.quit()
+                            st.success(f"✅ 성공적으로 **{target_email}**로 전체 상세 리포트를 발송했습니다.")
+                        except Exception as e:
+                            st.error(f"❌ 메일 발송 중 오류가 발생했습니다: {e}")
+                    else:
+                        time.sleep(1)
+                        st.info(f"💡 **(안내)** 시스템 우측 하단 `Manage app -> Settings -> Secrets`에 Gmail SMTP 정보를 등록해 주세요.")
 
 # ------------------------------------------------------------
-# 🆕 새로운 업로드 창 (하단 배치 및 실시간 1,2번 우선 로드 결합 엔진)
+# 🆕 초고속 업로드 및 실시간 렌더링 엔진 (투 페이즈)
 # ------------------------------------------------------------
 st.markdown("---")
 
@@ -403,39 +494,55 @@ if uploaded_files:
     st.info(f"📁 {len(uploaded_files)}장의 새 화물 사진이 접수되었습니다.")
     if st.button("🔍 위해물품 통합 분석 시작", type="primary", use_container_width=True):
         
-        # [체감 대기 단축을 위한 빈 박스(레이아웃) 사전 생성 기법]
         status_box = st.empty()       
         decision_box = st.empty()     
         info_col_box = st.empty()     
         
         user_images = []
         ai_contents = []
+        
         for uploaded_file in uploaded_files:
             src_image = Image.open(uploaded_file)
+            src_image.thumbnail((1024, 1024))
+            if src_image.mode != 'RGB':
+                src_image = src_image.convert('RGB')
             user_images.append(src_image)
-            img_for_ai = src_image.copy()
-            img_for_ai.thumbnail((1024, 1024))
-            ai_contents.append(img_for_ai)
+            ai_contents.append(src_image)
 
+        # [🔥 EVP 3D 누락 해결을 위해 예시 단어 교체]
         prompt = (
             "You are an expert Customs Forensic Intelligence OCR engine. Inspect the images carefully.\n"
-            "1. Extract ONLY the core, shortest possible product name (e.g., 'EVP 3D') into 'product_name'.\n"
-            "2. CRITICAL: Add the FULL product name including ALL flavors, taglines, and modifiers (e.g., 'EVP 3D Sour Candy', 'EVP 3D Tropic Thunder') into the 'multilingual_candidates' array. This is absolutely required for database matching.\n"
+            "1. Extract ONLY the core, shortest possible product name (e.g., 'SuperPump Max') into 'product_name'.\n"
+            "2. CRITICAL: Add the FULL product name including ALL flavors, taglines, and modifiers (e.g., 'SuperPump Max Blue Raspberry', 'SuperPump Max Fruit Punch') into the 'multilingual_candidates' array. This is absolutely required for database matching.\n"
             "3. Extract all ingredients comprehensively including sub-ingredients inside parentheses.\n"
             "4. Categorize remarks strictly into: '위해성분 의심', '화학명', '식물명', '일반명', '기타 원료', '확인 불가'.\n\n"
-            "Respond ONLY in a strict JSON format with these exact keys:\n"
-            "{\n  'brand': 'string',\n  'product_name': 'string',\n  'translated_product_name': 'string',\n  'barcode': 'string',\n  'multilingual_candidates': ['string'],\n  'translated_ingredients': [ {'raw_name': 'string', 'ko_name': 'string', 'remark': 'string'} ],\n  'package_features': 'string'\n}"
+            "Respond ONLY in a strict JSON format with these exact keys (Use double quotes for JSON):\n"
+            "{\n  \"brand\": \"string\",\n  \"product_name\": \"string\",\n  \"translated_product_name\": \"string\",\n  \"barcode\": \"string\",\n  \"multilingual_candidates\": [\"string\"],\n  \"translated_ingredients\": [ {\"raw_name\": \"string\", \"ko_name\": \"string\", \"remark\": \"string\"} ],\n  \"package_features\": \"string\"\n}"
         )
         ai_contents.append(prompt)
 
         brand, product_name, translated_product_name, barcode, translated_ingredients, package_features, multilingual_candidates = '확인 불가', '확인 불가', '', '바코드 확인 불가', [], '', []
         
-        # STEP 1: 고비용 연산 시작 알림
         status_box.status("🚀 1단계: 구글 Gemini 최신 비전 엔진이 이미지를 판독하고 있습니다...", expanded=True)
         
         try:
-            model = genai.GenerativeModel(model_name="gemini-3.5-flash")
-            response = model.generate_content(contents=ai_contents, generation_config={"response_mime_type": "application/json"})
+            if client is None:
+                st.error("API 키가 올바르게 설정되지 않아 AI를 호출할 수 없습니다.")
+                st.stop()
+                
+            response = client.models.generate_content(
+                model='gemini-1.5-flash',
+                contents=ai_contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    safety_settings=[
+                        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                        types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+                        types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+                    ]
+                )
+            )
             
             clean_json_str = response.text.replace('```json', '').replace('```', '')
             ocr_result = json.loads(clean_json_str)
@@ -450,7 +557,18 @@ if uploaded_files:
         except Exception as e:
             st.error(f"비전 엔진 통합 판독 중 예외 발생: {e}")
 
-        # STEP 2: 매칭 연산 즉시 실행 및 1, 2번 데이터 프론트엔드 선제 표출
+        with info_col_box.container():
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"""
+                **1. OCR 분석 정보 (1단계 완료)**
+                * 식별된 브랜드: <span style="background-color: #e7f5ff; color: #007bff; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{brand}</span>
+                * 식별된 제품명: <span style="background-color: #fff0f6; color: #d6336c; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{product_name}</span>
+                * 식별된 바코드: <span style="background-color: #f1f3f5; color: #495057; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{barcode}</span>
+                """, unsafe_allow_html=True)
+            with col2:
+                st.info("⏳ 2단계: 식약처 위해물품 DB와 교차 검증을 대조 중입니다...")
+
         status_box.status("🔍 2단계: 위해 의약품 DB와 교차 검증을 대조하고 있습니다...", expanded=True)
         
         matched_row = None
@@ -514,7 +632,6 @@ if uploaded_files:
                         match_type = "5순위 상세 기재내역 매칭"
                         break
 
-        # 위험 유치 타겟 판정 
         decision_situation = "승인"
         is_high_risk_ingredient = False
         
@@ -534,7 +651,6 @@ if uploaded_files:
         else:
             decision_situation = "승인"
 
-        # 후속 복잡 연산(렌더링) 이전에 화면의 상단 빈칸에 1차 가용 정보 전면 표출
         if decision_situation == "금지":
             decision_box.error("결과: 🔴 반입 금지")
             match_badge = 'background-color: #fff5f5; color: #fa5252; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;'
@@ -550,12 +666,11 @@ if uploaded_files:
 
         reg_num = str(matched_row['등록번호']).split('.')[0] if matched_row is not None and '등록번호' in matched_row and pd.notna(matched_row['등록번호']) else "등록번호 확인 불가"
 
-        # 사용자가 즉시 결과를 볼 수 있도록 플레이스홀더 영역에 드로잉 강제 주입
         with info_col_box.container():
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown(f"""
-                **1. OCR 분석 정보 (사진 {len(user_images)}장 취합 결과)**
+                **1. OCR 분석 정보 (최종 확인)**
                 * 식별된 브랜드: <span style="background-color: #e7f5ff; color: #007bff; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{brand}</span>
                 * 식별된 제품명: <span style="background-color: #fff0f6; color: #d6336c; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{product_name}</span>
                 * 식별된 번역명: <span style="background-color: #faf0f6; color: #ae3ec9; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{translated_product_name if translated_product_name else '해당없음'}</span>
@@ -568,7 +683,6 @@ if uploaded_files:
                 * DB 매칭 상태: <span style="{match_badge}">{display_match_text}</span>
                 """, unsafe_allow_html=True)
 
-        # STEP 3: 백그라운드 데이터 최종 빌드 및 완료
         status_box.status("⚡ 3단계: 성분 번역 맵 구축 및 조치 표준 가이드를 통합 매핑 중입니다...", expanded=True)
         
         report_data = {
