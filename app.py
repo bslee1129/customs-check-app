@@ -297,33 +297,91 @@ def pil_image_to_gemini_part(image: Image.Image):
     return types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg")
 
 
+def _extract_first_balanced_json_object(text: str) -> str:
+    """
+    응답 안에서 첫 번째 완전한 JSON 객체만 추출합니다.
+    기존 정규식 r'{.*}' 방식은 여러 객체/설명문까지 잡아 JSONDecodeError를 만들 수 있습니다.
+    문자열 내부의 중괄호는 무시합니다.
+    """
+    start = text.find("{")
+    if start < 0:
+        return ""
+
+    depth = 0
+    in_string = False
+    escape = False
+
+    for i in range(start, len(text)):
+        ch = text[i]
+
+        if escape:
+            escape = False
+            continue
+
+        if ch == "\\" and in_string:
+            escape = True
+            continue
+
+        if ch == '"':
+            in_string = not in_string
+            continue
+
+        if in_string:
+            continue
+
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+
+    return ""
+
+
 def parse_gemini_json_response(response):
     """
-    Gemini JSON mode 응답 파싱 안정화:
-    - response.text가 순수 JSON이면 바로 파싱
-    - ```json 코드블록이 섞인 경우 제거
-    - 앞뒤 설명이 섞인 경우 첫 번째 JSON 객체만 추출
+    Gemini JSON 응답 파싱 안정화 버전.
+    - response.parsed가 있으면 우선 사용
+    - 순수 JSON 파싱
+    - markdown 코드블록 제거 후 파싱
+    - 첫 번째 균형 잡힌 JSON 객체만 추출 후 파싱
+    - 실패 시 원문 일부를 로그 확인용으로 노출
     """
+    parsed = getattr(response, "parsed", None)
+    if isinstance(parsed, dict):
+        return parsed
+
     raw_text = getattr(response, "text", "") or ""
     if not raw_text.strip():
         raise ValueError("Gemini 응답이 비어 있습니다.")
 
-    try:
-        return json.loads(raw_text)
-    except json.JSONDecodeError:
-        pass
+    candidates = []
+    candidates.append(raw_text.strip())
 
-    clean_text = raw_text.replace("```json", "").replace("```", "").strip()
-    try:
-        return json.loads(clean_text)
-    except json.JSONDecodeError:
-        pass
+    clean_text = raw_text.strip()
+    clean_text = re.sub(r"^```(?:json|JSON)?\s*", "", clean_text)
+    clean_text = re.sub(r"\s*```$", "", clean_text).strip()
+    candidates.append(clean_text)
 
-    match = re.search(r'\{.*\}', clean_text, re.DOTALL)
-    if match:
-        return json.loads(match.group(0))
+    balanced = _extract_first_balanced_json_object(clean_text)
+    if balanced:
+        candidates.append(balanced)
 
-    raise ValueError(f"Gemini JSON 응답 파싱 실패: {raw_text[:500]}")
+    last_error = None
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            result = json.loads(candidate)
+            if isinstance(result, dict):
+                return result
+            raise ValueError("Gemini JSON 최상위 값이 객체(dict)가 아닙니다.")
+        except Exception as e:
+            last_error = e
+
+    debug_text = raw_text[:1200].replace("`", "'")
+    raise ValueError(f"Gemini JSON 응답 파싱 실패: {last_error}\n--- 응답 일부 ---\n{debug_text}")
 
 
 
