@@ -63,6 +63,101 @@ def get_base64_of_bin_file(bin_file):
         data = f.read()
     return base64.b64encode(data).decode()
 
+
+def split_image_urls(url_data):
+    """DB의 원본이미지URL 값을 안전하게 URL 목록으로 분리합니다."""
+    if pd.isna(url_data):
+        return []
+    text = str(url_data).strip()
+    if not text or text.lower() in ["nan", "none", "null", "확인 불가"]:
+        return []
+
+    # 쉼표, 줄바꿈, 세미콜론, 파이프 구분 모두 지원
+    candidates = re.split(r"[\n\r,;|]+", text)
+    urls = []
+    for item in candidates:
+        url = item.strip().strip('"').strip("'")
+        if not url:
+            continue
+        if url.startswith("//"):
+            url = "https:" + url
+        if url.startswith("http://") or url.startswith("https://"):
+            urls.append(url)
+    return urls
+
+
+@st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
+def fetch_db_image_bytes(url):
+    """원본 DB 이미지를 캐시하여 같은 URL은 다시 다운로드하지 않습니다."""
+    session = requests.Session()
+    session.verify = False
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        "Referer": "https://www.google.com/",
+    })
+    res = session.get(url, timeout=5, allow_redirects=True)
+    res.raise_for_status()
+    return res.content, res.headers.get("Content-Type", "")
+
+
+def render_db_original_images(url_data):
+    """DB 등록 원본 이미지를 빠르게 표시합니다.
+
+    기본은 Streamlit/브라우저가 URL을 직접 렌더링하게 하여 속도를 높입니다.
+    필요한 경우에만 다운로드/썸네일 캐시 방식으로 전환할 수 있습니다.
+    """
+    urls = split_image_urls(url_data)
+    if not urls:
+        st.info("❌ **해당 위해물품은 DB에 등록된 원본 사진 URL이 없습니다.**")
+        return
+
+    st.warning("🔗 DB 등록 원본 이미지 (비교 대조용)")
+    st.caption(f"DB 원본 이미지 URL {len(urls)}건")
+
+    # 속도 우선: 서버에서 이미지를 다운로드하지 않고 URL을 브라우저에 바로 넘김
+    # Streamlit 서버가 PIL로 이미지를 열지 않으므로 훨씬 빠릅니다.
+    view_mode = st.radio(
+        "DB 이미지 표시 방식",
+        ["빠른 표시(URL 직접 표시)", "안정 표시(다운로드/캐시)"],
+        horizontal=True,
+        key=f"db_img_view_mode_{abs(hash(str(urls))) % 100000}",
+        help="빠른 표시는 가장 빠르지만 일부 사이트가 외부 표시를 막을 수 있습니다. 그 경우 안정 표시를 선택하세요.",
+    )
+
+    max_show = min(len(urls), 6)
+    if len(urls) > max_show:
+        st.info(f"이미지가 {len(urls)}개라서 처음 {max_show}개만 표시합니다. 나머지는 원본 링크로 확인하세요.")
+
+    cols = st.columns(min(max_show, 3))
+    for i, url in enumerate(urls[:max_show], start=1):
+        with cols[(i - 1) % len(cols)]:
+            st.markdown(f"**DB 이미지 #{i}**")
+            st.markdown(f"[원본 링크 열기]({url})")
+
+            if view_mode.startswith("빠른"):
+                # 가장 빠른 방식: 서버 다운로드 없음
+                try:
+                    st.image(url, caption=f"DB 원본 이미지 #{i}", use_container_width=True)
+                except Exception as e:
+                    st.error(f"빠른 표시 실패: {e}")
+                    st.info("위 표시 방식에서 '안정 표시(다운로드/캐시)'를 선택해 보세요.")
+            else:
+                # 캐시된 다운로드 방식: 첫 회만 느리고 이후 빠름
+                try:
+                    content, content_type = fetch_db_image_bytes(url)
+                    try:
+                        db_img = Image.open(io.BytesIO(content))
+                        db_img.thumbnail((500, 500))
+                        st.image(db_img, caption=f"DB 원본 이미지 #{i}", use_container_width=True)
+                    except Exception:
+                        if "svg" in str(content_type).lower() or "image" in str(content_type).lower():
+                            st.image(url, caption=f"DB 원본 이미지 #{i}", use_container_width=True)
+                        else:
+                            st.error(f"이미지 형식 인식 실패: Content-Type={content_type or '확인 불가'}")
+                except Exception as e:
+                    st.error(f"이미지 로딩 실패: {e}")
+
 if os.path.exists(logo_path):
     img_src = f"data:image/png;base64,{get_base64_of_bin_file(logo_path)}"
 else:
@@ -101,7 +196,7 @@ client = None
 # ------------------------------------------------------------
 # 기본값: 최신 Flash 계열 모델
 # 필요 시 Streamlit Secrets에 GEMINI_MODEL="gemini-3.5-flash" 또는 "gemini-3.1-pro-preview"로 변경 가능
-GEMINI_MODEL = st.secrets.get("GEMINI_MODEL", "gemini-3.5-flash")
+GEMINI_MODEL = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 if gemini_key:
     try:
@@ -421,25 +516,7 @@ for idx, data in enumerate(st.session_state["history"]):
     st.markdown("<hr style='margin: 25px 0; border-top: 2px solid #007bff;'>", unsafe_allow_html=True)
     
     if matched_row is not None and decision_situation != "제한B":
-        url_data = str(matched_row.get('원본이미지URL', ''))
-        if url_data and url_data.lower() != 'nan' and url_data.strip():
-            st.warning("🔗 DB 등록 원본 이미지 (비교 대조용)")
-            urls = [u.strip() for u in url_data.split(',') if u.strip()]
-            db_cols = st.columns(len(urls))
-            with requests.Session() as session:
-                session.verify = False
-                session.headers.update({"User-Agent": "Mozilla/5.0"})
-                for idx_url, url in enumerate(urls):
-                    try:
-                        res = session.get(url, timeout=2)
-                        if res.status_code == 200:
-                            db_img = Image.open(io.BytesIO(res.content))
-                            db_img.thumbnail((400, 400))
-                            with db_cols[idx_url]:
-                                st.image(db_img, width=200)
-                    except: pass
-        else:
-            st.info("❌ **해당 위해물품은 DB에 등록된 원본 사진이 없습니다.**")
+        render_db_original_images(matched_row.get('원본이미지URL', ''))
     else:
         if decision_situation == "승인":
             st.success("✅ **통관 가능 (안전 물품)으로 판정되어 대조할 DB 위해사진이 없습니다.**")
