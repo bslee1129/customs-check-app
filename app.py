@@ -791,12 +791,82 @@ def pil_image_to_gemini_part(image: Image.Image):
     return types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg")
 
 
+OCR_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "brand": {"type": "string"},
+        "product_name": {"type": "string"},
+        "translated_product_name": {"type": "string"},
+        "barcode": {"type": "string"},
+        "multilingual_candidates": {
+            "type": "array",
+            "items": {"type": "string"}
+        },
+        "translated_ingredients": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "raw_name": {"type": "string"},
+                    "ko_name": {"type": "string"},
+                    "remark": {
+                        "type": "string",
+                        "enum": ["위해성분 의심", "화학명", "식물명", "일반명", "기타 원료", "확인 불가"]
+                    }
+                },
+                "required": ["raw_name", "ko_name", "remark"]
+            }
+        },
+        "package_features": {"type": "string"}
+    },
+    "required": [
+        "brand",
+        "product_name",
+        "translated_product_name",
+        "barcode",
+        "multilingual_candidates",
+        "translated_ingredients",
+        "package_features"
+    ]
+}
+
+
+def build_gemini_generation_config():
+    """
+    최신 Gemini API Structured outputs 방식 사용.
+    일반 response_mime_type만 쓰면 긴 성분표에서 쉼표 누락 JSON이 생길 수 있어
+    response_format + JSON Schema로 응답 구조를 강제합니다.
+    """
+    return {
+        "response_format": {
+            "text": {
+                "mime_type": "application/json",
+                "schema": OCR_RESPONSE_SCHEMA,
+            }
+        },
+        "max_output_tokens": 16384,
+        "safety_settings": [
+            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+        ],
+    }
+
+
+def _strip_markdown_fences(text: str) -> str:
+    text = (text or "").strip()
+    text = re.sub(r"^```(?:json|JSON)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text).strip()
+    return text
+
+
 def _extract_first_balanced_json_object(text: str) -> str:
     """
     응답 안에서 첫 번째 완전한 JSON 객체만 추출합니다.
-    기존 정규식 r'{.*}' 방식은 여러 객체/설명문까지 잡아 JSONDecodeError를 만들 수 있습니다.
     문자열 내부의 중괄호는 무시합니다.
     """
+    text = text or ""
     start = text.find("{")
     if start < 0:
         return ""
@@ -830,37 +900,128 @@ def _extract_first_balanced_json_object(text: str) -> str:
             if depth == 0:
                 return text[start:i + 1]
 
-    return ""
+    # 응답이 중간에 잘렸으면 마지막 } 기준으로라도 후보를 만든다.
+    end = text.rfind("}")
+    if end > start:
+        return text[start:end + 1]
+    return text[start:]
+
+
+def _repair_json_common(text: str) -> str:
+    """
+    Gemini가 긴 성분 배열을 만들 때 드물게 누락하는 쉼표를 보정합니다.
+    - } 다음 { 사이 쉼표 누락
+    - ] 다음 "field": 사이 쉼표 누락
+    - "value" 다음 "field": 사이 쉼표 누락
+    - 닫는 괄호 앞 trailing comma 제거
+    """
+    s = _strip_markdown_fences(text)
+    s = s.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+    s = _extract_first_balanced_json_object(s)
+
+    # 객체 배열 원소 사이 쉼표 누락: } \n {  -> }, \n {
+    s = re.sub(r'(\})\s*(\n\s*\{)', r'\1,\2', s)
+
+    # 배열/객체/문자열 값 뒤 다음 필드 쉼표 누락 보정
+    s = re.sub(r'([\}\]"0-9])\s*(\n\s*"[A-Za-z0-9_가-힣]+"\s*:)', r'\1,\2', s)
+
+    # 실수로 생긴 중복 쉼표와 trailing comma 보정
+    s = re.sub(r',\s*,+', ',', s)
+    s = re.sub(r',\s*([\}\]])', r'\1', s)
+    return s
+
+
+def _regex_json_string(text: str, key: str, default: str = "") -> str:
+    m = re.search(rf'"{re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"', text or "", re.S)
+    if not m:
+        return default
+    try:
+        return json.loads('"' + m.group(1) + '"')
+    except Exception:
+        return m.group(1)
+
+
+def _salvage_partial_ocr_json(text: str) -> dict:
+    """
+    최후 방어: JSON 전체 파싱이 실패해도 화면이 중단되지 않도록
+    정규식으로 확인 가능한 OCR 필드와 완성된 성분 행만 회수합니다.
+    """
+    raw = _strip_markdown_fences(text or "")
+    result = {
+        "brand": _regex_json_string(raw, "brand", "확인 불가"),
+        "product_name": _regex_json_string(raw, "product_name", "확인 불가"),
+        "translated_product_name": _regex_json_string(raw, "translated_product_name", ""),
+        "barcode": _regex_json_string(raw, "barcode", "바코드 확인 불가"),
+        "multilingual_candidates": [],
+        "translated_ingredients": [],
+        "package_features": _regex_json_string(raw, "package_features", ""),
+    }
+
+    cand_block = re.search(r'"multilingual_candidates"\s*:\s*\[(.*?)\]', raw, re.S)
+    if cand_block:
+        result["multilingual_candidates"] = re.findall(r'"((?:\\.|[^"\\])*)"', cand_block.group(1))
+
+    for m in re.finditer(
+        r'\{\s*"raw_name"\s*:\s*"((?:\\.|[^"\\])*)"\s*,\s*"ko_name"\s*:\s*"((?:\\.|[^"\\])*)"\s*,\s*"remark"\s*:\s*"((?:\\.|[^"\\])*)"',
+        raw,
+        re.S,
+    ):
+        try:
+            raw_name = json.loads('"' + m.group(1) + '"')
+            ko_name = json.loads('"' + m.group(2) + '"')
+            remark = json.loads('"' + m.group(3) + '"')
+        except Exception:
+            raw_name, ko_name, remark = m.group(1), m.group(2), m.group(3)
+        result["translated_ingredients"].append({
+            "raw_name": raw_name,
+            "ko_name": ko_name,
+            "remark": remark,
+        })
+
+    has_any = any([
+        result["brand"] != "확인 불가",
+        result["product_name"] != "확인 불가",
+        result["barcode"] != "바코드 확인 불가",
+        result["multilingual_candidates"],
+        result["translated_ingredients"],
+    ])
+    if not has_any:
+        raise ValueError("부분 OCR 결과도 회수하지 못했습니다.")
+    return result
 
 
 def parse_gemini_json_response(response):
     """
     Gemini JSON 응답 파싱 안정화 버전.
-    - response.parsed가 있으면 우선 사용
-    - 순수 JSON 파싱
-    - markdown 코드블록 제거 후 파싱
-    - 첫 번째 균형 잡힌 JSON 객체만 추출 후 파싱
-    - 실패 시 원문 일부를 로그 확인용으로 노출
+    1) response.parsed 우선
+    2) 순수 JSON / 코드블록 제거 JSON
+    3) 균형 잡힌 JSON 객체 추출
+    4) 쉼표 누락 등 흔한 JSON 오류 자동 보정
+    5) 최후에는 정규식으로 필드와 성분 행만 회수
     """
     parsed = getattr(response, "parsed", None)
     if isinstance(parsed, dict):
         return parsed
+    if parsed is not None:
+        try:
+            if hasattr(parsed, "model_dump"):
+                return parsed.model_dump()
+            if isinstance(parsed, str):
+                return json.loads(parsed)
+        except Exception:
+            pass
 
     raw_text = getattr(response, "text", "") or ""
     if not raw_text.strip():
         raise ValueError("Gemini 응답이 비어 있습니다.")
 
-    candidates = []
-    candidates.append(raw_text.strip())
-
-    clean_text = raw_text.strip()
-    clean_text = re.sub(r"^```(?:json|JSON)?\s*", "", clean_text)
-    clean_text = re.sub(r"\s*```$", "", clean_text).strip()
-    candidates.append(clean_text)
-
-    balanced = _extract_first_balanced_json_object(clean_text)
-    if balanced:
-        candidates.append(balanced)
+    clean_text = _strip_markdown_fences(raw_text)
+    candidates = [
+        raw_text.strip(),
+        clean_text,
+        _extract_first_balanced_json_object(clean_text),
+        _repair_json_common(clean_text),
+    ]
 
     last_error = None
     for candidate in candidates:
@@ -874,9 +1035,11 @@ def parse_gemini_json_response(response):
         except Exception as e:
             last_error = e
 
-    debug_text = raw_text[:1200].replace("`", "'")
-    raise ValueError(f"Gemini JSON 응답 파싱 실패: {last_error}\n--- 응답 일부 ---\n{debug_text}")
-
+    try:
+        return _salvage_partial_ocr_json(raw_text)
+    except Exception:
+        debug_text = raw_text[:1600].replace("`", "'")
+        raise ValueError(f"Gemini JSON 응답 파싱 실패: {last_error}\n--- 응답 일부 ---\n{debug_text}")
 
 
 def ensure_text(value, default="확인 불가"):
@@ -1482,7 +1645,8 @@ if input_files:
             "3. multilingual_candidates: FULL product names including flavors, taglines, modifiers, original scripts, romanization, and translated variants.\n"
             "4. translated_ingredients: all ingredients. Categorize remark strictly as one of: "
             "'위해성분 의심', '화학명', '식물명', '일반명', '기타 원료', '확인 불가'.\n\n"
-            "Respond ONLY in strict JSON with these exact keys. Use double quotes only:\n"
+            "Respond ONLY as ONE valid JSON object. Do not use markdown. Do not add explanations. "
+            "Never omit commas between array items or fields. Use double quotes only.\n"
             "{\n"
             "  \"brand\": \"string\",\n"
             "  \"product_name\": \"string\",\n"
@@ -1513,16 +1677,7 @@ if input_files:
             response = client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=ai_contents,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    max_output_tokens=8192,
-                    safety_settings=[
-                        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
-                        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-                        types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
-                        types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
-                    ]
-                )
+                config=build_gemini_generation_config()
             )
 
             ocr_result = parse_gemini_json_response(response)
