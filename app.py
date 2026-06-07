@@ -9,6 +9,7 @@ import time
 import re
 import os
 import base64
+import html
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -28,30 +29,412 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # [설정] 웹 페이지 제목 및 모바일 레이아웃 최적화
 st.set_page_config(page_title="AI 위해식품 스마트 검사관", layout="centered")
 
-# 모바일 UI 가속 및 가독성 향상을 위한 CSS 주입
+# 모바일 UI 가속 및 결과 화면 가독성 향상을 위한 CSS 주입
 st.markdown("""
     <style>
+    :root {
+        --primary: #2563eb;
+        --text-main: #1f2937;
+        --text-sub: #6b7280;
+        --line: #e5e7eb;
+        --soft-bg: #f8fafc;
+        --card-bg: #ffffff;
+        --danger: #ef4444;
+        --warning: #f59e0b;
+        --success: #10b981;
+    }
+
+    .block-container {
+        padding-top: 1.2rem;
+        padding-bottom: 2.5rem;
+        max-width: 980px;
+    }
+
     .stFileUploader {
         padding: 10px;
         background-color: #f8f9fa;
-        border-radius: 12px;
-        border: 2px dashed #007bff;
+        border-radius: 16px;
+        border: 1.5px dashed #93c5fd;
     }
     div[data-testid="stFileUploaderDropzone"] button {
         width: 100% !important;
-        height: 60px !important;
-        font-size: 18px !important;
-        font-weight: bold !important;
-        background-color: #007bff !important;
+        height: 58px !important;
+        font-size: 17px !important;
+        font-weight: 800 !important;
+        background: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
         color: white !important;
-        border-radius: 8px !important;
+        border-radius: 12px !important;
+        border: 0 !important;
     }
     .stButton>button {
         width: 100%;
-        height: 55px;
-        font-size: 18px !important;
-        font-weight: bold !important;
+        height: 52px;
+        font-size: 17px !important;
+        font-weight: 800 !important;
+        border-radius: 12px !important;
     }
+
+    .app-title-wrap {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin: 6px 0 4px 0;
+        flex-wrap: wrap;
+    }
+    .app-title-wrap img {
+        height: 34px;
+        width: auto;
+        object-fit: contain;
+        flex-shrink: 0;
+    }
+    .app-title-wrap h1 {
+        margin: 0;
+        padding: 0;
+        font-size: clamp(22px, 20px + 1vw, 30px);
+        font-weight: 850;
+        color: #111827;
+        line-height: 1.18;
+        word-break: keep-all;
+        letter-spacing: -0.04em;
+    }
+    .guide-caption {
+        color: #6b7280;
+        font-size: 0.95rem;
+        background: #f8fafc;
+        border: 1px solid #edf2f7;
+        border-radius: 14px;
+        padding: 12px 14px;
+        margin: 8px 0 16px 0;
+    }
+
+    .inspection-header {
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        padding: 20px 22px;
+        margin: 22px 0 14px 0;
+        box-shadow: 0 12px 30px rgba(15, 23, 42, 0.07);
+    }
+    .inspection-topline {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+    }
+    .inspection-title {
+        font-size: clamp(25px, 22px + 1.2vw, 38px);
+        font-weight: 900;
+        color: #111827;
+        letter-spacing: -0.055em;
+        line-height: 1.08;
+        word-break: keep-all;
+    }
+    .inspection-subtitle {
+        margin-top: 6px;
+        color: var(--text-sub);
+        font-size: 0.96rem;
+    }
+    .decision-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border-radius: 999px;
+        padding: 9px 14px;
+        font-weight: 900;
+        white-space: nowrap;
+        border: 1px solid transparent;
+        font-size: 0.98rem;
+    }
+    .decision-danger { background: #fff1f2; color: #e11d48; border-color: #fecdd3; }
+    .decision-warning { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+    .decision-success { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+    .mini-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+    }
+    .mini-stat {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 15px;
+        padding: 12px 13px;
+        min-height: 70px;
+    }
+    .mini-label {
+        color: #6b7280;
+        font-size: 0.78rem;
+        font-weight: 750;
+        margin-bottom: 5px;
+    }
+    .mini-value {
+        color: #111827;
+        font-weight: 850;
+        font-size: 0.98rem;
+        word-break: break-word;
+        line-height: 1.25;
+    }
+    .info-card {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--card-bg);
+        padding: 16px 17px;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.04);
+        margin-bottom: 12px;
+    }
+    .card-title {
+        font-weight: 900;
+        color: #111827;
+        font-size: 1.03rem;
+        margin-bottom: 12px;
+        letter-spacing: -0.02em;
+    }
+    .kv-row {
+        display: grid;
+        grid-template-columns: 128px minmax(0, 1fr);
+        gap: 10px;
+        padding: 8px 0;
+        border-top: 1px solid #f1f5f9;
+        align-items: start;
+    }
+    .kv-row:first-of-type { border-top: 0; }
+    .kv-key {
+        color: #64748b;
+        font-weight: 800;
+        font-size: 0.88rem;
+    }
+    .kv-value {
+        color: #1f2937;
+        font-weight: 650;
+        word-break: break-word;
+        line-height: 1.38;
+    }
+    .soft-note {
+        border-radius: 15px;
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        padding: 12px 14px;
+        color: #475569;
+        margin: 10px 0;
+    }
+    .action-list {
+        margin: 0;
+        padding-left: 1.15rem;
+        color: #374151;
+        line-height: 1.65;
+    }
+    .photo-section-title {
+        font-size: 1.05rem;
+        font-weight: 900;
+        color: #111827;
+        margin: 6px 0 10px 0;
+    }
+    .compact-hr {
+        margin: 18px 0;
+        border: none;
+        border-top: 1px solid #e5e7eb;
+    }
+
+    div[data-testid="stTabs"] button {
+        font-weight: 800;
+        border-radius: 10px 10px 0 0;
+    }
+
+    @media (max-width: 720px) {
+        .block-container { padding-left: 0.9rem; padding-right: 0.9rem; }
+        .mini-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .kv-row { grid-template-columns: 92px minmax(0, 1fr); }
+        .inspection-header { padding: 16px 15px; border-radius: 18px; }
+        .inspection-title { font-size: 28px; }
+    }
+
+
+    /* ---------------- 모바일 현장 사용 최적화 ---------------- */
+    .mobile-upload-card {
+        border: 1px solid #dbeafe;
+        background: linear-gradient(180deg, #eff6ff 0%, #ffffff 100%);
+        border-radius: 18px;
+        padding: 14px;
+        margin: 14px 0 12px 0;
+        box-shadow: 0 8px 24px rgba(37, 99, 235, 0.08);
+    }
+    .mobile-upload-title {
+        font-size: 1.1rem;
+        font-weight: 900;
+        color: #1e3a8a;
+        margin-bottom: 8px;
+        letter-spacing: -0.03em;
+    }
+    .mobile-upload-hint {
+        color: #475569;
+        font-size: 0.92rem;
+        line-height: 1.45;
+        margin-bottom: 10px;
+    }
+    .ingredient-card-wrap {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 10px;
+        margin-top: 10px;
+    }
+    .ingredient-card {
+        border: 1px solid #e5e7eb;
+        background: #ffffff;
+        border-radius: 15px;
+        padding: 12px 13px;
+        box-shadow: 0 4px 12px rgba(15, 23, 42, 0.035);
+    }
+    .ingredient-raw {
+        font-weight: 900;
+        color: #111827;
+        line-height: 1.35;
+        word-break: break-word;
+    }
+    .ingredient-ko {
+        color: #475569;
+        margin-top: 5px;
+        line-height: 1.35;
+        word-break: break-word;
+    }
+    .ingredient-badge {
+        display: inline-block;
+        margin-top: 8px;
+        border-radius: 999px;
+        padding: 4px 9px;
+        background: #f1f5f9;
+        color: #334155;
+        font-size: 0.82rem;
+        font-weight: 800;
+    }
+    .ingredient-badge-danger {
+        background: #fff1f2;
+        color: #e11d48;
+        border: 1px solid #fecdd3;
+    }
+
+    @media (max-width: 480px) {
+        html, body, [class*="css"] {
+            font-size: 16px;
+        }
+        .block-container {
+            padding-left: 0.65rem !important;
+            padding-right: 0.65rem !important;
+            padding-top: 0.65rem !important;
+            padding-bottom: 6rem !important;
+            max-width: 100% !important;
+        }
+        .app-title-wrap {
+            gap: 8px;
+            margin-top: 0;
+        }
+        .app-title-wrap img {
+            height: 28px;
+        }
+        .app-title-wrap h1 {
+            font-size: 1.28rem;
+            line-height: 1.15;
+        }
+        .guide-caption {
+            font-size: 0.86rem;
+            padding: 10px 11px;
+            border-radius: 13px;
+            margin-bottom: 10px;
+        }
+        .inspection-header {
+            padding: 14px 12px;
+            border-radius: 16px;
+            margin: 16px 0 10px 0;
+            box-shadow: 0 6px 16px rgba(15, 23, 42, 0.06);
+        }
+        .inspection-topline {
+            display: block;
+        }
+        .inspection-title {
+            font-size: 1.45rem !important;
+            line-height: 1.22;
+            letter-spacing: -0.045em;
+            word-break: break-word;
+        }
+        .inspection-subtitle {
+            font-size: 0.86rem;
+            margin: 6px 0 10px 0;
+        }
+        .decision-pill {
+            width: 100%;
+            justify-content: center;
+            font-size: 1rem;
+            padding: 10px 12px;
+            margin-top: 8px;
+        }
+        .mini-grid {
+            grid-template-columns: 1fr !important;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .mini-stat {
+            min-height: auto;
+            padding: 10px 11px;
+            border-radius: 13px;
+        }
+        .mini-label {
+            font-size: 0.77rem;
+            margin-bottom: 3px;
+        }
+        .mini-value {
+            font-size: 0.98rem;
+        }
+        .info-card {
+            padding: 13px 12px;
+            border-radius: 15px;
+            margin-bottom: 10px;
+            box-shadow: none;
+        }
+        .card-title {
+            font-size: 1rem;
+            margin-bottom: 8px;
+        }
+        .kv-row {
+            display: block !important;
+            padding: 9px 0;
+        }
+        .kv-key {
+            font-size: 0.78rem;
+            margin-bottom: 3px;
+        }
+        .kv-value {
+            font-size: 0.95rem;
+            line-height: 1.42;
+        }
+        .action-list {
+            padding-left: 1.1rem;
+            line-height: 1.55;
+            font-size: 0.94rem;
+        }
+        div[data-testid="stTabs"] button {
+            font-size: 0.9rem !important;
+            padding: 8px 4px !important;
+        }
+        div[data-testid="stFileUploaderDropzone"] {
+            padding: 10px !important;
+        }
+        div[data-testid="stFileUploaderDropzone"] button {
+            height: 54px !important;
+            font-size: 1rem !important;
+        }
+        .stButton>button {
+            min-height: 54px !important;
+            height: auto !important;
+            font-size: 1rem !important;
+            border-radius: 14px !important;
+        }
+        img {
+            max-width: 100%;
+            height: auto;
+        }
+    }
+
     </style>
 """, unsafe_allow_html=True)
 
@@ -102,60 +485,48 @@ def fetch_db_image_bytes(url):
 
 
 def render_db_original_images(url_data, key_prefix=None):
-    """DB 등록 원본 이미지를 빠르게 표시합니다.
-
-    기본은 Streamlit/브라우저가 URL을 직접 렌더링하게 하여 속도를 높입니다.
-    필요한 경우에만 다운로드/썸네일 캐시 방식으로 전환할 수 있습니다.
-
-    Streamlit은 같은 라벨/옵션/key의 위젯이 한 화면에 반복 생성되면
-    StreamlitDuplicateElementKey 오류가 발생하므로, 호출마다 고유 key를 생성합니다.
-    """
+    """DB 등록 원본 이미지를 깔끔한 카드형 UI로 표시합니다."""
     if key_prefix is None:
         st.session_state["_db_img_render_counter"] = st.session_state.get("_db_img_render_counter", 0) + 1
         key_prefix = f"db_img_{st.session_state['_db_img_render_counter']}"
 
     urls = split_image_urls(url_data)
     if not urls:
-        st.info("❌ **해당 위해물품은 DB에 등록된 원본 사진 URL이 없습니다.**")
+        st.info("DB에 등록된 원본 사진 URL이 없습니다.")
         return
 
-    st.warning("🔗 DB 등록 원본 이미지 (비교 대조용)")
-    st.caption(f"DB 원본 이미지 URL {len(urls)}건")
+    st.markdown('<div class="photo-section-title">🔗 DB 등록 원본 이미지</div>', unsafe_allow_html=True)
+    st.caption(f"비교 대조용 DB 이미지 {len(urls)}건")
 
-    # 속도 우선: 서버에서 이미지를 다운로드하지 않고 URL을 브라우저에 바로 넘김
-    # Streamlit 서버가 PIL로 이미지를 열지 않으므로 훨씬 빠릅니다.
     view_mode = st.radio(
         "DB 이미지 표시 방식",
-        ["빠른 표시(URL 직접 표시)", "안정 표시(다운로드/캐시)"],
+        ["빠른 표시", "안정 표시"],
         horizontal=True,
         key=f"{key_prefix}_view_mode",
-        help="빠른 표시는 가장 빠르지만 일부 사이트가 외부 표시를 막을 수 있습니다. 그 경우 안정 표시를 선택하세요.",
+        label_visibility="collapsed",
+        help="빠른 표시는 URL을 바로 보여주므로 가장 빠릅니다. 보이지 않으면 안정 표시를 선택하세요.",
     )
 
     max_show = min(len(urls), 6)
     if len(urls) > max_show:
-        st.info(f"이미지가 {len(urls)}개라서 처음 {max_show}개만 표시합니다. 나머지는 원본 링크로 확인하세요.")
+        st.info(f"이미지가 {len(urls)}개라서 처음 {max_show}개만 표시합니다.")
 
-    cols = st.columns(min(max_show, 3))
+    cols = st.columns(1)
     for i, url in enumerate(urls[:max_show], start=1):
         with cols[(i - 1) % len(cols)]:
-            st.markdown(f"**DB 이미지 #{i}**")
-            st.markdown(f"[원본 링크 열기]({url})")
-
-            if view_mode.startswith("빠른"):
-                # 가장 빠른 방식: 서버 다운로드 없음
+            st.markdown(f"**DB 이미지 #{i}** · [원본 링크 열기]({url})")
+            if view_mode == "빠른 표시":
                 try:
                     st.image(url, caption=f"DB 원본 이미지 #{i}", use_container_width=True)
                 except Exception as e:
                     st.error(f"빠른 표시 실패: {e}")
-                    st.info("위 표시 방식에서 '안정 표시(다운로드/캐시)'를 선택해 보세요.")
+                    st.info("상단 표시 방식을 '안정 표시'로 바꿔 보세요.")
             else:
-                # 캐시된 다운로드 방식: 첫 회만 느리고 이후 빠름
                 try:
                     content, content_type = fetch_db_image_bytes(url)
                     try:
                         db_img = Image.open(io.BytesIO(content))
-                        db_img.thumbnail((500, 500))
+                        db_img.thumbnail((520, 520))
                         st.image(db_img, caption=f"DB 원본 이미지 #{i}", use_container_width=True)
                     except Exception:
                         if "svg" in str(content_type).lower() or "image" in str(content_type).lower():
@@ -172,27 +543,14 @@ else:
 
 # 모바일 화면 반응형 타이틀 적용 
 st.markdown(f"""
-    <div style="
-        display: flex; 
-        align-items: center; 
-        gap: 10px; 
-        margin-top: 10px; 
-        margin-bottom: 5px;
-        flex-wrap: wrap;
-    ">
-        <img src="{img_src}" style="height: 32px; width: auto; object-fit: contain; flex-shrink: 0;">
-        <h1 style="
-            margin: 0; 
-            padding: 0; 
-            font-size: clamp(20px, 18px + 1vw, 28px); 
-            font-weight: 700; 
-            line-height: 1.2;
-            word-break: keep-all;
-        ">AI 위해식품 스마트 검사관</h1>
+    <div class="app-title-wrap">
+        <img src="{img_src}">
+        <h1>AI 위해식품 스마트 검사관</h1>
+    </div>
+    <div class="guide-caption">
+        💡 <b>[촬영 가이드]</b> 제품의 <b>전면, 후면, 성분표, 바코드</b>가 선명하게 보이도록 여러 장을 한 번에 올려주세요. 검사 기록은 계속 누적됩니다.
     </div>
 """, unsafe_allow_html=True)
-
-st.caption("💡 **[촬영 가이드]** 제품의 **전면, 후면, 성분표, 바코드**가 선명하게 보이도록 여러 장을 한 번에 올려주세요.")
 
 # 최신 Client 객체 방식의 API 연결 설정
 gemini_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -523,152 +881,266 @@ def load_and_standardize_db():
 
 df_db = load_and_standardize_db()
 
+
 # ------------------------------------------------------------
-# 기존 검사 기록 화면 출력 (상단 누적부)
+# 결과 화면 렌더링 유틸리티
+# ------------------------------------------------------------
+def esc(value):
+    """HTML 출력용 안전 문자열 변환."""
+    if value is None:
+        return ""
+    return html.escape(str(value))
+
+
+def decision_meta(decision_situation):
+    if decision_situation == "금지":
+        return {
+            "label": "반입 금지",
+            "icon": "🔴",
+            "class": "decision-danger",
+            "subtitle": "DB 금지 정보와 명확히 일치하거나 고위험 성분이 확인되었습니다.",
+        }
+    if decision_situation in ["제한A", "제한B"]:
+        subtitle = "성분 기반 검토 또는 현품 정보 보완이 필요한 물품입니다."
+        if decision_situation == "제한B":
+            subtitle = "제품명·성분·바코드 식별이 부족하여 보완 확인이 필요합니다."
+        return {
+            "label": "정밀 확인 필요",
+            "icon": "⚠️",
+            "class": "decision-warning",
+            "subtitle": subtitle,
+        }
+    return {
+        "label": "통관 가능",
+        "icon": "🟢",
+        "class": "decision-success",
+        "subtitle": "현재 DB 기준으로 직접 일치하는 위해 규제 이력이 확인되지 않았습니다.",
+    }
+
+
+def render_kv_card(title, rows, icon=""):
+    row_html = ""
+    for key, value in rows:
+        row_html += f"""
+        <div class="kv-row">
+            <div class="kv-key">{esc(key)}</div>
+            <div class="kv-value">{esc(value)}</div>
+        </div>
+        """
+    st.markdown(
+        f"""
+        <div class="info-card">
+            <div class="card-title">{esc(icon)} {esc(title)}</div>
+            {row_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_result_header(idx, product_name, decision_situation, brand, barcode, reg_num, match_type):
+    meta = decision_meta(decision_situation)
+    display_name = product_name if product_name and product_name != "확인 불가" else "미상 물품"
+    st.markdown(
+        f"""
+        <div class="inspection-header">
+            <div class="inspection-topline">
+                <div>
+                    <div class="inspection-title">📦 [검사 기록 #{idx + 1}] {esc(display_name)}</div>
+                    <div class="inspection-subtitle">{esc(meta['subtitle'])}</div>
+                </div>
+                <div class="decision-pill {meta['class']}">{meta['icon']} {esc(meta['label'])}</div>
+            </div>
+            <div class="mini-grid">
+                <div class="mini-stat"><div class="mini-label">브랜드</div><div class="mini-value">{esc(brand)}</div></div>
+                <div class="mini-stat"><div class="mini-label">바코드</div><div class="mini-value">{esc(barcode)}</div></div>
+                <div class="mini-stat"><div class="mini-label">DB 등록번호</div><div class="mini-value">{esc(reg_num)}</div></div>
+                <div class="mini-stat"><div class="mini-label">매칭 방식</div><div class="mini-value">{esc(match_type)}</div></div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def get_match_display_text(decision_situation, match_type):
+    if decision_situation == "금지":
+        return f"위해물품 확정 · {match_type}"
+    if decision_situation == "제한B":
+        return "현품 정보 식별 불가"
+    if decision_situation == "승인":
+        return "DB 규제 내역 없음"
+    return f"확인 요망 · {match_type}"
+
+
+def render_action_guide(decision_situation, reg_num, matched_row, product_name, is_ingredient_only_match=False):
+    if decision_situation == "금지":
+        rows = [
+            "통관을 보류하고 유치 절차로 전환합니다.",
+            f"유치 사유에 DB 등록번호({reg_num})와 이미지 인식 제품명({product_name})을 함께 기록합니다.",
+            "제품 전면, 성분표, 바코드 영역 사진을 증빙으로 보관합니다.",
+        ]
+    elif decision_situation == "제한A":
+        rows = [
+            "즉시 승인하지 않고 성분 기반 위해 가능성 확인 대상으로 분류합니다.",
+            "성분 함유 여부가 불명확하면 전자통관시스템 분석의뢰를 검토합니다.",
+        ]
+        if is_ingredient_only_match:
+            rows.insert(0, "제품명/바코드는 불일치하나 성분명이 DB 위해 성분명과 일치합니다.")
+    elif decision_situation == "제한B":
+        rows = [
+            "통관 판단을 보류하고 제품 전면, 후면, 성분표, 바코드를 재촬영합니다.",
+            "라벨 훼손 또는 식별 불가 시 제품명·바코드·성분을 수기로 확인해 DB와 다시 대조합니다.",
+        ]
+    else:
+        rows = [
+            "건강기능식품 및 의약품 자가사용 목적 인정 범위 등 수량 기준을 확인합니다.",
+            "본 판정은 보조 판단이며 실제 통관 허용 여부는 현장 세관공무원의 최종 요건 확인에 따릅니다.",
+        ]
+
+    items = "".join(f"<li>{esc(item)}</li>" for item in rows)
+    st.markdown(
+        f"""
+        <div class="info-card">
+            <div class="card-title">📋 현장 조치 가이드</div>
+            <ul class="action-list">{items}</ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_ingredients_table(translated_ingredients):
+    if not translated_ingredients:
+        st.info("성분표에서 추출된 성분 정보가 없습니다.")
+        return
+
+    cards = ['<div class="ingredient-card-wrap">']
+    for ing in translated_ingredients:
+        raw = ensure_text(ing.get("raw_name"), "확인 불가")
+        ko = ensure_text(ing.get("ko_name"), "확인 불가")
+        remark = ensure_text(ing.get("remark"), "일반명")
+        danger_class = " ingredient-badge-danger" if any(kw in remark for kw in ["위해", "의심", "danger", "Danger"]) else ""
+        card = (
+            '<div class="ingredient-card">'
+            f'<div class="ingredient-raw">{esc(raw)}</div>'
+            f'<div class="ingredient-ko">{esc(ko)}</div>'
+            f'<span class="ingredient-badge{danger_class}">{esc(remark)}</span>'
+            '</div>'
+        )
+        cards.append(card)
+    cards.append('</div>')
+    st.markdown("".join(cards), unsafe_allow_html=True)
+
+
+# ------------------------------------------------------------
+# 기존 검사 기록 화면 출력 (상단 누적부) - 카드형 디자인
 # ------------------------------------------------------------
 for idx, data in enumerate(st.session_state["history"]):
-    st.markdown("---")
-    st.markdown(f"## 📦 [검사 기록 #{idx+1}] {data['product_name'] if data['product_name'] != '확인 불가' else '미상 물품'}")
-    
-    user_images = data["user_images"]
-    brand = data["brand"]
-    product_name = data["product_name"]
-    translated_product_name = data["translated_product_name"]
-    barcode = data["barcode"]
-    translated_ingredients = data["translated_ingredients"]
-    matched_row = data["matched_row"]
-    match_type = data["match_type"]
-    decision_situation = data["decision_situation"]
-    is_ingredient_only_match = data["is_ingredient_only_match"]
-    is_ambiguous_multilingual = data["is_ambiguous_multilingual"]
-    matched_ingredient_str = data["matched_ingredient_str"]
-    
-    if decision_situation == "금지":
-        final_decision = "🔴 반입 금지"
-        display_func = st.error
-        match_badge = 'background-color: #fff5f5; color: #fa5252; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;'
-    elif decision_situation == "제한A":
-        final_decision = "⚠️ 제한 - 성분 기반 검토 및 정밀검사 필요"
-        display_func = st.warning
-        match_badge = 'background-color: #fff9db; color: #fab005; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;'
-    elif decision_situation == "제한B":
-        final_decision = "⚠️ 제한 - 현품 식별 불가 / 정보 보완 필요"
-        display_func = st.warning
-        match_badge = 'background-color: #fff9db; color: #fab005; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;'
-    else:
-        final_decision = "🟢 통관 가능"
-        display_func = st.success
-        match_badge = 'background-color: #ebfbee; color: #40c057; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;'
+    user_images = data.get("user_images", [])
+    brand = data.get("brand", "확인 불가")
+    product_name = data.get("product_name", "확인 불가")
+    translated_product_name = data.get("translated_product_name", "")
+    barcode = data.get("barcode", "바코드 확인 불가")
+    translated_ingredients = data.get("translated_ingredients", [])
+    matched_row = data.get("matched_row")
+    match_type = data.get("match_type", "🟢 매칭되지 않음")
+    decision_situation = data.get("decision_situation", "승인")
+    is_ingredient_only_match = data.get("is_ingredient_only_match", False)
+    is_ambiguous_multilingual = data.get("is_ambiguous_multilingual", False)
+    matched_ingredient_str = data.get("matched_ingredient_str", "")
 
-    display_func(f"결과: {final_decision}")
-        
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown(f"""
-        **1. OCR 분석 정보 (사진 {len(user_images)}장 취합 결과)**
-        * 식별된 브랜드: <span style="background-color: #e7f5ff; color: #007bff; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{brand}</span>
-        * 식별된 제품명: <span style="background-color: #fff0f6; color: #d6336c; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{product_name}</span>
-        * 식별된 번역명: <span style="background-color: #faf0f6; color: #ae3ec9; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{translated_product_name if translated_product_name else '해당없음'}</span>
-        * 식별된 바코드: <span style="background-color: #f1f3f5; color: #495057; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{barcode}</span>
-        """, unsafe_allow_html=True)
-    with col2:
-        reg_num = str(matched_row['등록번호']).split('.')[0] if matched_row is not None and '등록번호' in matched_row and pd.notna(matched_row['등록번호']) else "등록번호 확인 불가"
-        display_match_text = f"🔴 [{match_type}] 위해물품 확정" if "🔴" in match_badge or decision_situation=="금지" else f"⚠️ [{match_type}] 확인 요망"
-        if decision_situation == "승인": display_match_text = "🟢 DB 규제 내역 없음"
-        if decision_situation == "제한B": display_match_text = "⚠️ 현품 정보 식별 불가"
-            
-        st.markdown(f"""
-        **2. DB 대조 결과**
-        * 등록번호: <span style="background-color: #e8f7ff; color: #1c7ed6; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{reg_num}</span>
-        * DB 매칭 상태: <span style="{match_badge}">{display_match_text}</span>
-        """, unsafe_allow_html=True)
+    reg_num = (
+        str(matched_row["등록번호"]).split(".")[0]
+        if matched_row is not None and "등록번호" in matched_row and pd.notna(matched_row["등록번호"])
+        else "등록번호 확인 불가"
+    )
+    display_match_text = get_match_display_text(decision_situation, match_type)
 
-    if translated_ingredients:
-        st.markdown("---")
-        suspicious_count = sum(1 for ing in translated_ingredients if any(kw in str(ing.get('remark', '')).lower() for kw in ['위해', '의심', 'danger']))
-        expander_title = f"🧪 [성분 번역 결과] 총 {len(translated_ingredients)}개 성분 검출"
-        if suspicious_count > 0: expander_title += f" (⚠️ 위해성분 의심 {suspicious_count}건 포함)"
-            
-        with st.expander(expander_title, expanded=(suspicious_count > 0)):
-            table_html = "<table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif;'>"
-            table_html += "<tr style='background-color: #f1f3f5;'><th style='padding: 6px; border: 1px solid #dee2e6; text-align: left;'>원문 성분명</th><th style='padding: 6px; border: 1px solid #dee2e6; text-align: left;'>한글 번역명</th><th style='padding: 6px; border: 1px solid #dee2e6; text-align: center; width: 105px;'>비고</th></tr>"
-            
-            for ing in translated_ingredients:
-                raw = ing.get('raw_name', '확인 불가')
-                ko = ing.get('ko_name', '확인 불가')
-                rem = ing.get('remark', '').strip()
-                if not rem or rem.lower() == 'nan': rem = '일반명'
-                
-                if "위해" in rem or "의심" in rem:
-                    row_bg, badge_style, display_rem = "#fff5f5", "background-color: #ffe3e3; color: #fa5252; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 12px;", f"🚨 {rem}"
-                elif "기타" in rem or "원료" in rem:
-                    row_bg, badge_style, display_rem = "#ffffff", "background-color: #f1f3f5; color: #868e96; padding: 2px 6px; border-radius: 4px; font-size: 12px;", f"📦 {rem}"
-                elif "식물" in rem:
-                    row_bg, badge_style, display_rem = "#ffffff", "background-color: #ebfbee; color: #2b8a3e; padding: 2px 6px; border-radius: 4px; font-size: 12px;", f"🌿 {rem}"
-                else:
-                    row_bg, badge_style, display_rem = "#ffffff", "background-color: #e3fafc; color: #0c8599; padding: 2px 6px; border-radius: 4px; font-size: 12px;", f"⚗️ {rem}"
-                
-                table_html += f"<tr style='background-color: {row_bg};'><td style='padding: 6px; border: 1px solid #dee2e6;'>{raw}</td><td style='padding: 6px; border: 1px solid #dee2e6; font-weight: bold;'>{ko}</td><td style='padding: 6px; border: 1px solid #dee2e6; text-align: center;'><span style='{badge_style}'>{display_rem}</span></td></tr>"
-            table_html += "</table>"
-            st.markdown(table_html, unsafe_allow_html=True)
-                    
-    st.markdown("---")
-    st.markdown("**3. 불법의약품DB 상세 정보 (본 DB 기준 최우선)**")
-    if matched_row is not None:
-        st.write(f"• **제품명(DB):** {get_clean_db_value(matched_row, '제품명')}")
-        st.write(f"• **성분명(DB):** {get_clean_db_value(matched_row, '성분명')}")
-        st.write(f"• **정보 출처:** {get_clean_db_value(matched_row, '정보출처')}")
-        st.write(f"• **통관 보류 사유:** {get_clean_db_value(matched_row, '통관보류사유내용')}")
-        st.write(f"• **상세 내용:** {get_clean_db_value(matched_row, '상세내용')}")
-        st.write(f"• **법적 관련 근거:** {get_clean_db_value(matched_row, '관련근거')}")
-    else:
-        st.write("• 특이사항: 데이터베이스 내 일치하는 위해 규제 이력이 존재하지 않습니다.")
+    render_result_header(idx, product_name, decision_situation, brand, barcode, reg_num, match_type)
 
-    st.markdown("---")
-    st.markdown("## 📋 현장 조치 가이드")
-    
-    if decision_situation == "금지":
-        st.markdown(f"""
-**1. 통관 보류 및 유치**
-- 사진 속 제품명, 바코드, 등록번호, 성분명 중 하나가 금지 정보와 명확히 일치하는 경우 통관을 보류하고 유치 절차로 전환한다.
+    tab_summary, tab_ingredients, tab_images = st.tabs(["📌 요약", "🧪 성분", "📷 사진 대조"])
 
-**2. 유치 사유 기록 (연동 데이터)**
-- **DB 등록번호:** `{reg_num}`
-- **DB 제품명:** `{get_clean_db_value(matched_row, '제품명')}`
-- **이미지 인식 제품명:** `{product_name}`
-- **통관보류사유내용:** `{get_clean_db_value(matched_row, '통관보류사유내용')}`
+    with tab_summary:
+        col1, col2 = st.columns(2)
+        with col1:
+            render_kv_card(
+                "OCR 분석 정보",
+                [
+                    ("촬영 사진", f"{len(user_images)}장"),
+                    ("식별 브랜드", brand),
+                    ("식별 제품명", product_name),
+                    ("식별 번역명", translated_product_name if translated_product_name else "해당없음"),
+                    ("식별 바코드", barcode),
+                ],
+                icon="🔎",
+            )
+        with col2:
+            render_kv_card(
+                "DB 대조 결과",
+                [
+                    ("등록번호", reg_num),
+                    ("매칭 상태", display_match_text),
+                    ("성분 단독 매칭", "예" if is_ingredient_only_match else "아니오"),
+                    ("부분/파생 매칭", "예" if is_ambiguous_multilingual else "아니오"),
+                    ("일치 성분", matched_ingredient_str if matched_ingredient_str else "해당없음"),
+                ],
+                icon="🧾",
+            )
 
-**3. 현품 및 증빙 확보**
-- 제품 전면 사진, 성분표, 바코드 영역을 촬영하여 증빙 보관.
-""", unsafe_allow_html=True)
-    elif decision_situation == "제한A":
-        if is_ingredient_only_match:
-            st.warning("⚠️ **제품명/바코드는 DB와 일치하지 않으나, 성분표 내 성분명이 DB의 위해 성분명과 일치하므로 검토 및 정밀검사가 필요합니다.**")
-        st.markdown("**1. 즉시 승인 금지**\n- 해당 물품은 “성분 기반 위해 가능성 확인 대상”으로 분류.\n**2. 분석의뢰 검토**\n- 성분 함유 여부가 불명확한 경우 전자통관시스템을 통한 분석의뢰 절차 검토.", unsafe_allow_html=True)
-    elif decision_situation == "제한B":
-        st.markdown("**1. 통관 판단 보류 및 재촬영 요청**\n- 흐리거나 정보가 누락된 경우 승인을 단정하지 말고 보완 요청.\n**2. 수기 입력 대체**\n- 라벨 훼손 시 제품명, 바코드 등을 수기로 확인하여 대조.", unsafe_allow_html=True)
-    elif decision_situation == "승인":
-        st.markdown("**1. 수량 및 자가사용 기준 확인**\n- 건강기능식품 및 의약품 자가사용 목적 인정 범위(원칙적 6병 이내) 확인.\n**2. 최종 안내**\n- 본 판정은 보조 판단이며, 실제 통관 허용 여부는 현장 세관공무원의 요건 확인에 따름.", unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.markdown("### 🔍 [현장 촬영 사진 확인 및 교차 검증]")
-    
-    st.info("📸 내가 촬영한 현품 사진")
-    if user_images:
-        user_cols = st.columns(len(user_images))
-        for u_idx, u_img in enumerate(user_images):
-            with user_cols[u_idx]:
-                st.image(u_img, width=200)
-
-    st.markdown("<hr style='margin: 25px 0; border-top: 2px solid #007bff;'>", unsafe_allow_html=True)
-    
-    if matched_row is not None and decision_situation != "제한B":
-        render_db_original_images(matched_row.get('원본이미지URL', ''), key_prefix=f'history_{idx}')
-    else:
-        if decision_situation == "승인":
-            st.success("✅ **통관 가능 (안전 물품)으로 판정되어 대조할 DB 위해사진이 없습니다.**")
+        if matched_row is not None:
+            render_kv_card(
+                "불법의약품DB 상세 정보",
+                [
+                    ("제품명(DB)", get_clean_db_value(matched_row, "제품명")),
+                    ("성분명(DB)", get_clean_db_value(matched_row, "성분명")),
+                    ("정보 출처", get_clean_db_value(matched_row, "정보출처")),
+                    ("통관 보류 사유", get_clean_db_value(matched_row, "통관보류사유내용")),
+                    ("상세 내용", get_clean_db_value(matched_row, "상세내용")),
+                    ("법적 관련 근거", get_clean_db_value(matched_row, "관련근거")),
+                ],
+                icon="📚",
+            )
         else:
-            st.info("❌ **대조할 DB 원본 사진이 없습니다.**")
+            st.markdown(
+                '<div class="soft-note">현재 DB 기준으로 일치하는 위해 규제 이력이 확인되지 않았습니다.</div>',
+                unsafe_allow_html=True,
+            )
+
+        render_action_guide(decision_situation, reg_num, matched_row, product_name, is_ingredient_only_match)
+
+    with tab_ingredients:
+        suspicious_count = sum(
+            1
+            for ing in translated_ingredients
+            if any(kw in str(ing.get("remark", "")).lower() for kw in ["위해", "의심", "danger"])
+        )
+        st.markdown(
+            f"**성분 추출 결과:** 총 {len(translated_ingredients)}개"
+            + (f" / 위해성분 의심 {suspicious_count}건" if suspicious_count else "")
+        )
+        render_ingredients_table(translated_ingredients)
+
+    with tab_images:
+        st.markdown('<div class="photo-section-title">📸 내가 촬영한 현품 사진</div>', unsafe_allow_html=True)
+        if user_images:
+            user_cols = st.columns(1)
+            for u_idx, u_img in enumerate(user_images, start=1):
+                with user_cols[(u_idx - 1) % len(user_cols)]:
+                    st.image(u_img, caption=f"현품 사진 #{u_idx}", use_container_width=True)
+        else:
+            st.info("촬영 사진이 없습니다.")
+
+        st.markdown('<hr class="compact-hr">', unsafe_allow_html=True)
+
+        if matched_row is not None and decision_situation != "제한B":
+            render_db_original_images(matched_row.get("원본이미지URL", ""), key_prefix=f"history_{idx}")
+        else:
+            if decision_situation == "승인":
+                st.success("통관 가능 판정으로 대조할 DB 위해사진이 없습니다.")
+            else:
+                st.info("대조할 DB 원본 사진이 없습니다.")
+
 
 # ------------------------------------------------------------
 # 📧 검사 결과 리포트 상세 내용 발송
@@ -808,21 +1280,43 @@ if st.session_state["history"]:
     if st.button("🗑️ 모든 검사 기록 삭제 (메모리 정리)", use_container_width=True):
         st.session_state["history"] = []
         for key in list(st.session_state.keys()):
-            if key.startswith("cam_uploader_"):
+            if key.startswith("cam_uploader_") or key.startswith("mobile_camera_"):
                 del st.session_state[key]
         st.session_state["uploader_id"] += 1
         st.rerun()
 
+st.markdown(
+    """
+    <div class="mobile-upload-card">
+        <div class="mobile-upload-title">📱 현장 촬영 / 사진 선택</div>
+        <div class="mobile-upload-hint">휴대폰에서는 먼저 <b>전면·후면·성분표·바코드</b>를 촬영한 뒤, 아래에서 여러 장을 한 번에 선택하는 방식이 가장 안정적입니다.</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+camera_file = st.camera_input(
+    "카메라로 1장 바로 촬영",
+    key=f"mobile_camera_{st.session_state['uploader_id']}",
+    help="단일 사진 빠른 검사에 사용하세요. 여러 장은 아래 사진 선택을 권장합니다.",
+)
+
 uploaded_files = st.file_uploader(
-    "눌러서 카메라 촬영 또는 사진 선택", 
+    "사진 여러 장 선택", 
     type=["jpg", "jpeg", "png"],
     accept_multiple_files=True,
     key=f"cam_uploader_{st.session_state['uploader_id']}",
-    label_visibility="collapsed"
+    help="전면, 후면, 성분표, 바코드 사진을 함께 선택하면 정확도가 올라갑니다.",
 )
 
+input_files = []
+if camera_file is not None:
+    input_files.append(camera_file)
 if uploaded_files:
-    st.info(f"📁 {len(uploaded_files)}장의 새 화물 사진이 접수되었습니다.")
+    input_files.extend(uploaded_files)
+
+if input_files:
+    st.info(f"📁 {len(input_files)}장의 새 화물 사진이 접수되었습니다.")
     if st.button("🔍 위해물품 통합 분석 시작", type="primary", use_container_width=True):
         
         status_box = st.empty()       
@@ -832,9 +1326,9 @@ if uploaded_files:
         user_images = []
         image_parts = []
 
-        for uploaded_file in uploaded_files:
+        for uploaded_file in input_files:
             src_image = Image.open(uploaded_file)
-            src_image.thumbnail((1280, 1280))
+            src_image.thumbnail((1024, 1024))
             if src_image.mode != 'RGB':
                 src_image = src_image.convert('RGB')
             user_images.append(src_image)
@@ -879,7 +1373,7 @@ if uploaded_files:
 
         brand, product_name, translated_product_name, barcode, translated_ingredients, package_features, multilingual_candidates = '확인 불가', '확인 불가', '', '바코드 확인 불가', [], '', []
         
-        status_box.status(f"🚀 1단계: Google Gemini 최신 비전 엔진({GEMINI_MODEL})이 이미지를 판독하고 있습니다...", expanded=True)
+        status_box.status(f"🚀 1단계: Google Gemini 최신 비전 엔진({GEMINI_MODEL})이 이미지를 판독하고 있습니다...", expanded=False)
         
         try:
             if client is None:
@@ -933,7 +1427,7 @@ if uploaded_files:
             with col2:
                 st.info("⏳ 2단계: 식약처 위해물품 DB와 교차 검증 중입니다...")
 
-        status_box.status("🔍 2단계: 위해 의약품 DB와 교차 검증하고 있습니다...", expanded=True)
+        status_box.status("🔍 2단계: 위해 의약품 DB와 교차 검증하고 있습니다...", expanded=False)
         
         matched_row = None
         match_type = "🟢 매칭되지 않음"
@@ -1047,7 +1541,7 @@ if uploaded_files:
                 * DB 매칭 상태: <span style="{match_badge}">{display_match_text}</span>
                 """, unsafe_allow_html=True)
 
-        status_box.status("⚡ 3단계: 성분 번역 맵 구축 및 조치 표준 가이드를 통합 매핑 중입니다...", expanded=True)
+        status_box.status("⚡ 3단계: 성분 번역 맵 구축 및 조치 표준 가이드를 통합 매핑 중입니다...", expanded=False)
         
         report_data = {
             "user_images": user_images,
