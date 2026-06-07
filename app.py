@@ -12,8 +12,6 @@ import base64
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-
-# [에러 로깅용 모듈 추가]
 import traceback
 import datetime
 
@@ -522,7 +520,8 @@ if uploaded_files:
             user_images.append(src_image)
             ai_contents.append(src_image)
 
-        # JSON 형식이 파이썬에서 깨지지 않도록 무조건 큰따옴표(\")를 쓰도록 지시문 유지
+        # JSON 형식이 파이썬에서 깨지지 않도록 무조건 큰따옴표(\")를 쓰도록 지시
+        # EVP 3D를 제외한 SuperPump Max 등의 다른 샘플 키워드로 교체 완료
         prompt = (
             "You are an expert Customs Forensic Intelligence OCR engine. Inspect the images carefully.\n"
             "1. Extract ONLY the core, shortest possible product name (e.g., 'SuperPump Max') into 'product_name'.\n"
@@ -543,6 +542,7 @@ if uploaded_files:
                 st.error("API 키가 올바르게 설정되지 않아 AI를 호출할 수 없습니다.")
                 st.stop()
                 
+            # [🔥 모델 수정] 가장 안정적이고 빠르며 똑똑한 최신 실무용 모델인 1.5 플래시 고정
             response = client.models.generate_content(
                 model='gemini-1.5-flash',
                 contents=ai_contents,
@@ -569,14 +569,13 @@ if uploaded_files:
             multilingual_candidates = ocr_result.get('multilingual_candidates', [])
             
         except Exception as e:
-            # [🔥 에러 로깅 추가] 에러 발생 시 파일 저장 및 화면에 상세 내역 펼침창 제공
             error_details = traceback.format_exc()
             st.error(f"⚠️ 비전 엔진 통합 판독 중 예외 발생: {e}")
             with st.expander("🛠️ 상세 오류 내역 보기 (디버깅용)"):
                 st.code(error_details, language="python")
             with open("error_log.txt", "a", encoding="utf-8") as f:
                 f.write(f"\n{'='*50}\n[VISION AI ERROR] {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n{error_details}")
-            st.stop() # 에러 시 무리하게 2단계를 진행하지 않고 즉시 중단
+            st.stop() 
 
         with info_col_box.container():
             col1, col2 = st.columns(2)
@@ -646,83 +645,4 @@ if uploaded_files:
                         break
 
             if matched_row is None:
-                for idx_row, row in df_db.iterrows():
-                    detail_str = str(row.get('상세내용', '')).lower() + str(row.get('관련근거', '')).lower() + str(row.get('통관보류사유내용', '')).lower()
-                    if user_main_norm and user_main_norm in detail_str:
-                        matched_row = row
-                        match_type = "5순위 상세 기재내역 매칭"
-                        break
-
-        decision_situation = "승인"
-        is_high_risk_ingredient = False
-        
-        if matched_row is not None:
-            reason_pool = str(matched_row.get('통관보류사유내용', '')).lower() + str(matched_row.get('관련근거', '')).lower()
-            if any(kw in reason_pool for kw in ['마약', '향정', '향정신성', '대마', '코데인', '디히드로코데인', '반입금지', '반입 금지']):
-                is_high_risk_ingredient = True
-
-        is_totally_unreadable = (product_name in ['확인 불가', ''] and barcode in ['바코드 확인 불가', ''] and not translated_ingredients)
-
-        if is_totally_unreadable:
-            decision_situation = "제한B"
-        elif matched_row is not None and (match_type in ["1순위 바코드 일치", "2/3순위 제품명 다국어 정규화 일치"] or is_high_risk_ingredient):
-            decision_situation = "금지"
-        elif matched_row is not None and (is_ingredient_only_match or is_ambiguous_multilingual or match_type in ["5순위 상세 기재내역 매칭", "제품명 파생/부분 포함 (맛, 제형 차이 의심)"]):
-            decision_situation = "제한A"
-        else:
-            decision_situation = "승인"
-
-        if decision_situation == "금지":
-            decision_box.error("결과: 🔴 반입 금지")
-            match_badge = 'background-color: #fff5f5; color: #fa5252; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;'
-            display_match_text = f"🔴 [{match_type}] 위해물품 확정"
-        elif decision_situation in ["제한A", "제한B"]:
-            decision_box.warning("결과: ⚠️ 제한 - 정밀 확인 필요")
-            match_badge = 'background-color: #fff9db; color: #fab005; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;'
-            display_match_text = "⚠️ 현품 정보 식별 불가" if decision_situation == "제한B" else f"⚠️ [{match_type}] 확인 요망"
-        else:
-            decision_box.success("결과: 🟢 통관 가능")
-            match_badge = 'background-color: #ebfbee; color: #40c057; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;'
-            display_match_text = "🟢 DB 규제 내역 없음"
-
-        reg_num = str(matched_row['등록번호']).split('.')[0] if matched_row is not None and '등록번호' in matched_row and pd.notna(matched_row['등록번호']) else "등록번호 확인 불가"
-
-        with info_col_box.container():
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown(f"""
-                **1. OCR 분석 정보 (최종 확인)**
-                * 식별된 브랜드: <span style="background-color: #e7f5ff; color: #007bff; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{brand}</span>
-                * 식별된 제품명: <span style="background-color: #fff0f6; color: #d6336c; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{product_name}</span>
-                * 식별된 번역명: <span style="background-color: #faf0f6; color: #ae3ec9; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{translated_product_name if translated_product_name else '해당없음'}</span>
-                * 식별된 바코드: <span style="background-color: #f1f3f5; color: #495057; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{barcode}</span>
-                """, unsafe_allow_html=True)
-            with col2:
-                st.markdown(f"""
-                **2. DB 대조 결과**
-                * 등록번호: <span style="background-color: #e8f7ff; color: #1c7ed6; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{reg_num}</span>
-                * DB 매칭 상태: <span style="{match_badge}">{display_match_text}</span>
-                """, unsafe_allow_html=True)
-
-        status_box.status("⚡ 3단계: 성분 번역 맵 구축 및 조치 표준 가이드를 통합 매핑 중입니다...", expanded=True)
-        
-        report_data = {
-            "user_images": user_images,
-            "brand": brand,
-            "product_name": product_name,
-            "translated_product_name": translated_product_name,
-            "barcode": barcode,
-            "translated_ingredients": translated_ingredients,
-            "matched_row": matched_row,
-            "match_type": match_type,
-            "decision_situation": decision_situation,
-            "is_ingredient_only_match": is_ingredient_only_match,
-            "is_ambiguous_multilingual": is_ambiguous_multilingual,
-            "matched_ingredient_str": matched_ingredient_str,
-        }
-        
-        st.session_state["history"].append(report_data)
-        st.session_state["uploader_id"] += 1
-        
-        status_box.empty()
-        st.rerun()
+                for idx_row, row
