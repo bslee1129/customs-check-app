@@ -192,7 +192,7 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-st.caption("💡 **[촬영 가이드]** 제품의 **전면, 후면, 성분표, 바코드**가 선명하게 보이도록 여러 장을 한 번에 올려주세요. (검사 기록은 계속 누적됩니다.)")
+st.caption("💡 **[촬영 가이드]** 제품의 **전면, 후면, 성분표, 바코드**가 선명하게 보이도록 여러 장을 한 번에 올려주세요.")
 
 # 최신 Client 객체 방식의 API 연결 설정
 gemini_key = st.secrets.get("GEMINI_API_KEY", "")
