@@ -76,25 +76,35 @@ st.markdown("""
 
     .app-title-wrap {
         display: flex;
-        align-items: center;
-        gap: 12px;
-        margin: 6px 0 4px 0;
-        flex-wrap: wrap;
+        align-items: flex-start;
+        gap: 10px;
+        margin: 0 0 8px 0;
+        padding: 10px 0 6px 0;
+        flex-wrap: nowrap;
+        overflow: visible;
+        min-height: 50px;
     }
     .app-title-wrap img {
-        height: 34px;
+        height: 32px;
         width: auto;
         object-fit: contain;
         flex-shrink: 0;
+        margin-top: 4px;
     }
-    .app-title-wrap h1 {
+    .app-title-wrap h1, .app-title-text {
+        display: block;
+        flex: 1 1 auto;
+        min-width: 0;
         margin: 0;
         padding: 0;
-        font-size: clamp(22px, 20px + 1vw, 30px);
+        font-size: clamp(21px, 4.2vw, 29px);
         font-weight: 850;
         color: #111827;
-        line-height: 1.18;
+        line-height: 1.35;
         word-break: keep-all;
+        overflow-wrap: break-word;
+        white-space: normal;
+        overflow: visible;
         letter-spacing: -0.04em;
     }
     .guide-caption {
@@ -321,20 +331,31 @@ st.markdown("""
         .block-container {
             padding-left: 0.65rem !important;
             padding-right: 0.65rem !important;
-            padding-top: 0.65rem !important;
+            padding-top: 1.35rem !important;
             padding-bottom: 6rem !important;
             max-width: 100% !important;
         }
         .app-title-wrap {
-            gap: 8px;
+            gap: 7px;
             margin-top: 0;
+            margin-bottom: 8px;
+            padding-top: 8px;
+            padding-bottom: 6px;
+            align-items: flex-start;
+            flex-wrap: nowrap;
+            min-height: 46px;
+            overflow: visible;
         }
         .app-title-wrap img {
-            height: 28px;
+            height: 24px;
+            margin-top: 5px;
         }
-        .app-title-wrap h1 {
-            font-size: 1.28rem;
-            line-height: 1.15;
+        .app-title-wrap h1, .app-title-text {
+            font-size: 1.08rem;
+            line-height: 1.42;
+            letter-spacing: -0.035em;
+            white-space: normal;
+            overflow: visible;
         }
         .guide-caption {
             font-size: 0.86rem;
@@ -544,8 +565,8 @@ else:
 # 모바일 화면 반응형 타이틀 적용 
 st.markdown(f"""
     <div class="app-title-wrap">
-        <img src="{img_src}">
-        <h1>AI 위해식품 스마트 검사관</h1>
+        <img src="{img_src}" alt="Korea Customs Service logo">
+        <div class="app-title-text" role="heading" aria-level="1">AI 위해식품 스마트 검사관</div>
     </div>
     <div class="guide-caption">
         💡 <b>[촬영 가이드]</b> 제품의 <b>전면, 후면, 성분표, 바코드</b>가 선명하게 보이도록 여러 장을 한 번에 올려주세요. 검사 기록은 계속 누적됩니다.
