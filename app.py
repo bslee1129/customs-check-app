@@ -1280,7 +1280,7 @@ if st.session_state["history"]:
     if st.button("🗑️ 모든 검사 기록 삭제 (메모리 정리)", use_container_width=True):
         st.session_state["history"] = []
         for key in list(st.session_state.keys()):
-            if key.startswith("cam_uploader_") or key.startswith("mobile_camera_"):
+            if key.startswith("cam_uploader_"):
                 del st.session_state[key]
         st.session_state["uploader_id"] += 1
         st.rerun()
@@ -1288,17 +1288,11 @@ if st.session_state["history"]:
 st.markdown(
     """
     <div class="mobile-upload-card">
-        <div class="mobile-upload-title">📱 현장 촬영 / 사진 선택</div>
-        <div class="mobile-upload-hint">휴대폰에서는 먼저 <b>전면·후면·성분표·바코드</b>를 촬영한 뒤, 아래에서 여러 장을 한 번에 선택하는 방식이 가장 안정적입니다.</div>
+        <div class="mobile-upload-title">📱 사진 선택</div>
+        <div class="mobile-upload-hint">휴대폰에서는 먼저 <b>전면·후면·성분표·바코드</b>를 촬영해 둔 뒤, 아래에서 여러 장을 한 번에 선택하는 방식이 가장 안정적입니다.</div>
     </div>
     """,
     unsafe_allow_html=True,
-)
-
-camera_file = st.camera_input(
-    "카메라로 1장 바로 촬영",
-    key=f"mobile_camera_{st.session_state['uploader_id']}",
-    help="단일 사진 빠른 검사에 사용하세요. 여러 장은 아래 사진 선택을 권장합니다.",
 )
 
 uploaded_files = st.file_uploader(
@@ -1309,11 +1303,7 @@ uploaded_files = st.file_uploader(
     help="전면, 후면, 성분표, 바코드 사진을 함께 선택하면 정확도가 올라갑니다.",
 )
 
-input_files = []
-if camera_file is not None:
-    input_files.append(camera_file)
-if uploaded_files:
-    input_files.extend(uploaded_files)
+input_files = list(uploaded_files) if uploaded_files else []
 
 if input_files:
     st.info(f"📁 {len(input_files)}장의 새 화물 사진이 접수되었습니다.")
