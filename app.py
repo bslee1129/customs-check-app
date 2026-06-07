@@ -101,12 +101,19 @@ def fetch_db_image_bytes(url):
     return res.content, res.headers.get("Content-Type", "")
 
 
-def render_db_original_images(url_data):
+def render_db_original_images(url_data, key_prefix=None):
     """DB 등록 원본 이미지를 빠르게 표시합니다.
 
     기본은 Streamlit/브라우저가 URL을 직접 렌더링하게 하여 속도를 높입니다.
     필요한 경우에만 다운로드/썸네일 캐시 방식으로 전환할 수 있습니다.
+
+    Streamlit은 같은 라벨/옵션/key의 위젯이 한 화면에 반복 생성되면
+    StreamlitDuplicateElementKey 오류가 발생하므로, 호출마다 고유 key를 생성합니다.
     """
+    if key_prefix is None:
+        st.session_state["_db_img_render_counter"] = st.session_state.get("_db_img_render_counter", 0) + 1
+        key_prefix = f"db_img_{st.session_state['_db_img_render_counter']}"
+
     urls = split_image_urls(url_data)
     if not urls:
         st.info("❌ **해당 위해물품은 DB에 등록된 원본 사진 URL이 없습니다.**")
@@ -121,7 +128,7 @@ def render_db_original_images(url_data):
         "DB 이미지 표시 방식",
         ["빠른 표시(URL 직접 표시)", "안정 표시(다운로드/캐시)"],
         horizontal=True,
-        key=f"db_img_view_mode_{abs(hash(str(urls))) % 100000}",
+        key=f"{key_prefix}_view_mode",
         help="빠른 표시는 가장 빠르지만 일부 사이트가 외부 표시를 막을 수 있습니다. 그 경우 안정 표시를 선택하세요.",
     )
 
@@ -656,7 +663,7 @@ for idx, data in enumerate(st.session_state["history"]):
     st.markdown("<hr style='margin: 25px 0; border-top: 2px solid #007bff;'>", unsafe_allow_html=True)
     
     if matched_row is not None and decision_situation != "제한B":
-        render_db_original_images(matched_row.get('원본이미지URL', ''))
+        render_db_original_images(matched_row.get('원본이미지URL', ''), key_prefix=f'history_{idx}')
     else:
         if decision_situation == "승인":
             st.success("✅ **통관 가능 (안전 물품)으로 판정되어 대조할 DB 위해사진이 없습니다.**")
