@@ -195,8 +195,9 @@ client = None
 # Gemini 최신 모델 설정
 # ------------------------------------------------------------
 # 기본값: 최신 Flash 계열 모델
-# 필요 시 Streamlit Secrets에 GEMINI_MODEL="gemini-3.5-flash" 또는 "gemini-3.1-pro-preview"로 변경 가능
-GEMINI_MODEL = st.secrets.get("GEMINI_MODEL", "gemini-2.5-flash")
+# 필요 시 Streamlit Secrets에서 GEMINI_MODEL 값으로 모델 변경 가능
+# 기본값: Gemini 3.5 Flash
+GEMINI_MODEL = st.secrets.get("GEMINI_MODEL", "gemini-3.5-flash")
 
 if gemini_key:
     try:
@@ -324,6 +325,87 @@ def parse_gemini_json_response(response):
 
     raise ValueError(f"Gemini JSON 응답 파싱 실패: {raw_text[:500]}")
 
+
+
+def ensure_text(value, default="확인 불가"):
+    """
+    Gemini 응답값을 안전한 문자열로 변환합니다.
+    - list/tuple이면 첫 번째 유효값 사용
+    - dict이면 JSON 문자열화
+    - None/빈값/nan이면 기본값 반환
+    """
+    if value is None:
+        return default
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            converted = ensure_text(item, "")
+            if converted:
+                return converted
+        return default
+    if isinstance(value, dict):
+        value = json.dumps(value, ensure_ascii=False)
+    try:
+        if pd.isna(value):
+            return default
+    except Exception:
+        pass
+    text = str(value).strip()
+    if not text or text.lower() in ["nan", "none", "null", "[]", "{}"]:
+        return default
+    return text
+
+
+def ensure_text_list(value):
+    """Gemini 응답값을 문자열 리스트로 정규화합니다."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    elif not isinstance(value, list):
+        value = [value]
+
+    result = []
+    for item in value:
+        text = ensure_text(item, "")
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def ensure_ingredient_list(value):
+    """translated_ingredients가 None/string/dict/list 어떤 형태로 와도 표준 list[dict]로 변환합니다."""
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        value = [value]
+    elif isinstance(value, str):
+        # 모델이 문자열로 성분을 반환한 경우 콤마 기준으로 최소 구조화
+        value = [{"raw_name": x.strip(), "ko_name": "확인 불가", "remark": "확인 불가"} for x in re.split(r"[,/;\n]+", value) if x.strip()]
+    elif not isinstance(value, list):
+        return []
+
+    result = []
+    for item in value:
+        if isinstance(item, dict):
+            result.append({
+                "raw_name": ensure_text(item.get("raw_name"), "확인 불가"),
+                "ko_name": ensure_text(item.get("ko_name"), "확인 불가"),
+                "remark": ensure_text(item.get("remark"), "확인 불가"),
+            })
+        else:
+            text = ensure_text(item, "")
+            if text:
+                result.append({"raw_name": text, "ko_name": "확인 불가", "remark": "확인 불가"})
+    return result
+
+
+def normalize_barcode(value):
+    """barcode가 list/int/None으로 와도 DB 대조 가능한 문자열로 변환합니다."""
+    text = ensure_text(value, "")
+    if not text or text == "바코드 확인 불가":
+        return ""
+    # 숫자와 영문만 남김. 하이픈/공백 제거.
+    return re.sub(r"[^0-9a-zA-Z]", "", text).lower()
 
 def get_clean_db_value(row, column_name):
     if row is None: return "해당 없음"
@@ -703,6 +785,7 @@ if uploaded_files:
             "- Include every detected alias, translated name, romanized name, and likely DB name in multilingual_candidates.\n"
             "- Example: メジコン せき止め錠 Pro, Medicon Cough Tablet Pro, 메지콘 기침약 프로 must be treated as candidate aliases.\n"
             "- Extract barcode numbers only when clearly visible.\n"
+            "- CRITICAL: Return barcode as one single string only. Never return barcode as an array/list.\n"
             "- Extract all ingredients comprehensively, including sub-ingredients inside parentheses.\n\n"
             "FIELD RULES:\n"
             "1. product_name: core shortest possible product name.\n"
@@ -715,7 +798,7 @@ if uploaded_files:
             "  \"brand\": \"string\",\n"
             "  \"product_name\": \"string\",\n"
             "  \"translated_product_name\": \"string\",\n"
-            "  \"barcode\": \"string\",\n"
+            "  \"barcode\": \"single string only\",\n"
             "  \"multilingual_candidates\": [\"string\"],\n"
             "  \"translated_ingredients\": [ {\"raw_name\": \"string\", \"ko_name\": \"string\", \"remark\": \"string\"} ],\n"
             "  \"package_features\": \"string\"\n"
@@ -743,8 +826,6 @@ if uploaded_files:
                 contents=ai_contents,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    temperature=0.1,
-                    top_p=0.95,
                     max_output_tokens=8192,
                     safety_settings=[
                         types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
@@ -757,13 +838,13 @@ if uploaded_files:
 
             ocr_result = parse_gemini_json_response(response)
             
-            brand = ocr_result.get('brand', '확인 불가')
-            product_name = ocr_result.get('product_name', '확인 불가')
-            translated_product_name = ocr_result.get('translated_product_name', '')
-            barcode = ocr_result.get('barcode', '바코드 확인 불가')
-            translated_ingredients = ocr_result.get('translated_ingredients', [])
-            package_features = ocr_result.get('package_features', '')
-            multilingual_candidates = ocr_result.get('multilingual_candidates', [])
+            brand = ensure_text(ocr_result.get('brand'), '확인 불가')
+            product_name = ensure_text(ocr_result.get('product_name'), '확인 불가')
+            translated_product_name = ensure_text(ocr_result.get('translated_product_name'), '')
+            barcode = ensure_text(ocr_result.get('barcode'), '바코드 확인 불가')
+            translated_ingredients = ensure_ingredient_list(ocr_result.get('translated_ingredients'))
+            package_features = ensure_text(ocr_result.get('package_features'), '')
+            multilingual_candidates = ensure_text_list(ocr_result.get('multilingual_candidates'))
             
         except Exception as e:
             # [🔥 에러 로깅 추가] 에러 발생 시 파일 저장 및 화면에 상세 내역 펼침창 제공
@@ -801,7 +882,7 @@ if uploaded_files:
             if user_main_norm and user_main_norm not in user_norm_candidates:
                 user_norm_candidates.append(user_main_norm)
                 
-            norm_user_barcode = barcode.replace(" ", "").lower() if barcode != '바코드 확인 불가' else ""
+            norm_user_barcode = normalize_barcode(barcode)
             user_ingredient_tokens = []
             for ing in translated_ingredients:
                 user_ingredient_tokens.extend(tokenize_text(ing.get('raw_name', '')))
