@@ -283,40 +283,53 @@ st.markdown("""
         line-height: 1.45;
         margin-bottom: 10px;
     }
-    .ingredient-card-wrap {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 10px;
-        margin-top: 10px;
-    }
-    .ingredient-card {
+    .ingredient-table-wrap {
+        width: 100%;
+        overflow-x: auto;
+        margin-top: 8px;
         border: 1px solid #e5e7eb;
+        border-radius: 12px;
         background: #ffffff;
-        border-radius: 15px;
-        padding: 12px 13px;
-        box-shadow: 0 4px 12px rgba(15, 23, 42, 0.035);
     }
-    .ingredient-raw {
+    .ingredient-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.82rem;
+        line-height: 1.28;
+        table-layout: fixed;
+    }
+    .ingredient-table th {
+        background: #f8fafc;
+        color: #334155;
         font-weight: 900;
-        color: #111827;
-        line-height: 1.35;
+        padding: 7px 6px;
+        border-bottom: 1px solid #e5e7eb;
+        text-align: left;
+        white-space: nowrap;
+    }
+    .ingredient-table td {
+        color: #1f2937;
+        padding: 7px 6px;
+        border-bottom: 1px solid #f1f5f9;
+        vertical-align: top;
         word-break: break-word;
     }
-    .ingredient-ko {
-        color: #475569;
-        margin-top: 5px;
-        line-height: 1.35;
-        word-break: break-word;
+    .ingredient-table tr:last-child td {
+        border-bottom: 0;
     }
+    .ingredient-table .col-no { width: 34px; text-align: center; color: #64748b; }
+    .ingredient-table .col-raw { width: 35%; }
+    .ingredient-table .col-ko { width: 35%; font-weight: 750; }
+    .ingredient-table .col-remark { width: 22%; }
     .ingredient-badge {
         display: inline-block;
-        margin-top: 8px;
         border-radius: 999px;
-        padding: 4px 9px;
+        padding: 2px 6px;
         background: #f1f5f9;
         color: #334155;
-        font-size: 0.82rem;
-        font-weight: 800;
+        font-size: 0.72rem;
+        font-weight: 850;
+        white-space: normal;
     }
     .ingredient-badge-danger {
         background: #fff1f2;
@@ -454,6 +467,18 @@ st.markdown("""
             max-width: 100%;
             height: auto;
         }
+        .ingredient-table {
+            font-size: 0.74rem;
+            min-width: 420px;
+        }
+        .ingredient-table th,
+        .ingredient-table td {
+            padding: 5px 5px;
+        }
+        .ingredient-badge {
+            font-size: 0.68rem;
+            padding: 2px 5px;
+        }
     }
 
 
@@ -581,8 +606,17 @@ def fetch_db_image_bytes(url):
     return res.content, res.headers.get("Content-Type", "")
 
 
+def render_compare_image(image_source, caption, link_url=None):
+    """사진 대조 탭 이미지를 기존 대비 약 50% 폭으로 가운데 표시합니다."""
+    left, mid, right = st.columns([1, 2, 1])
+    with mid:
+        if link_url:
+            st.markdown(f"<div style='font-size:0.82rem; margin-bottom:4px;'>🔗 <a href='{esc(link_url)}' target='_blank'>원본 링크 열기</a></div>", unsafe_allow_html=True)
+        st.image(image_source, caption=caption, use_container_width=True)
+
+
 def render_db_original_images(url_data, key_prefix=None):
-    """DB 등록 원본 이미지를 깔끔한 카드형 UI로 표시합니다."""
+    """DB 등록 원본 이미지를 50% 축소 폭으로 표시합니다."""
     if key_prefix is None:
         st.session_state["_db_img_render_counter"] = st.session_state.get("_db_img_render_counter", 0) + 1
         key_prefix = f"db_img_{st.session_state['_db_img_render_counter']}"
@@ -593,7 +627,7 @@ def render_db_original_images(url_data, key_prefix=None):
         return
 
     st.markdown('<div class="photo-section-title">🔗 DB 등록 원본 이미지</div>', unsafe_allow_html=True)
-    st.caption(f"비교 대조용 DB 이미지 {len(urls)}건")
+    st.caption(f"비교 대조용 DB 이미지 {len(urls)}건 · 사진은 기존 대비 약 50% 폭으로 표시됩니다.")
 
     view_mode = st.radio(
         "DB 이미지 표시 방식",
@@ -608,30 +642,28 @@ def render_db_original_images(url_data, key_prefix=None):
     if len(urls) > max_show:
         st.info(f"이미지가 {len(urls)}개라서 처음 {max_show}개만 표시합니다.")
 
-    cols = st.columns(1)
     for i, url in enumerate(urls[:max_show], start=1):
-        with cols[(i - 1) % len(cols)]:
-            st.markdown(f"**DB 이미지 #{i}** · [원본 링크 열기]({url})")
-            if view_mode == "빠른 표시":
+        st.markdown(f"**DB 이미지 #{i}**")
+        if view_mode == "빠른 표시":
+            try:
+                render_compare_image(url, caption=f"DB 원본 이미지 #{i}", link_url=url)
+            except Exception as e:
+                st.error(f"빠른 표시 실패: {e}")
+                st.info("상단 표시 방식을 '안정 표시'로 바꿔 보세요.")
+        else:
+            try:
+                content, content_type = fetch_db_image_bytes(url)
                 try:
-                    st.image(url, caption=f"DB 원본 이미지 #{i}", use_container_width=True)
-                except Exception as e:
-                    st.error(f"빠른 표시 실패: {e}")
-                    st.info("상단 표시 방식을 '안정 표시'로 바꿔 보세요.")
-            else:
-                try:
-                    content, content_type = fetch_db_image_bytes(url)
-                    try:
-                        db_img = Image.open(io.BytesIO(content))
-                        db_img.thumbnail((520, 520))
-                        st.image(db_img, caption=f"DB 원본 이미지 #{i}", use_container_width=True)
-                    except Exception:
-                        if "svg" in str(content_type).lower() or "image" in str(content_type).lower():
-                            st.image(url, caption=f"DB 원본 이미지 #{i}", use_container_width=True)
-                        else:
-                            st.error(f"이미지 형식 인식 실패: Content-Type={content_type or '확인 불가'}")
-                except Exception as e:
-                    st.error(f"이미지 로딩 실패: {e}")
+                    db_img = Image.open(io.BytesIO(content))
+                    db_img.thumbnail((520, 520))
+                    render_compare_image(db_img, caption=f"DB 원본 이미지 #{i}", link_url=url)
+                except Exception:
+                    if "svg" in str(content_type).lower() or "image" in str(content_type).lower():
+                        render_compare_image(url, caption=f"DB 원본 이미지 #{i}", link_url=url)
+                    else:
+                        st.error(f"이미지 형식 인식 실패: Content-Type={content_type or '확인 불가'}")
+            except Exception as e:
+                st.error(f"이미지 로딩 실패: {e}")
 
 if os.path.exists(logo_path):
     img_src = f"data:image/png;base64,{get_base64_of_bin_file(logo_path)}"
@@ -1108,26 +1140,38 @@ def render_action_guide(decision_situation, reg_num, matched_row, product_name, 
 
 
 def render_ingredients_table(translated_ingredients):
+    """성분 화면을 모바일에서도 작게 보이는 압축 표 형태로 렌더링합니다."""
     if not translated_ingredients:
         st.info("성분표에서 추출된 성분 정보가 없습니다.")
         return
 
-    cards = ['<div class="ingredient-card-wrap">']
-    for ing in translated_ingredients:
+    rows = [
+        '<div class="ingredient-table-wrap">'
+        '<table class="ingredient-table">'
+        '<thead><tr>'
+        '<th class="col-no">#</th>'
+        '<th class="col-raw">원문</th>'
+        '<th class="col-ko">한글명</th>'
+        '<th class="col-remark">비고</th>'
+        '</tr></thead><tbody>'
+    ]
+
+    for idx, ing in enumerate(translated_ingredients, start=1):
         raw = ensure_text(ing.get("raw_name"), "확인 불가")
         ko = ensure_text(ing.get("ko_name"), "확인 불가")
         remark = ensure_text(ing.get("remark"), "일반명")
         danger_class = " ingredient-badge-danger" if any(kw in remark for kw in ["위해", "의심", "danger", "Danger"]) else ""
-        card = (
-            '<div class="ingredient-card">'
-            f'<div class="ingredient-raw">{esc(raw)}</div>'
-            f'<div class="ingredient-ko">{esc(ko)}</div>'
-            f'<span class="ingredient-badge{danger_class}">{esc(remark)}</span>'
-            '</div>'
+        rows.append(
+            '<tr>'
+            f'<td class="col-no">{idx}</td>'
+            f'<td class="col-raw">{esc(raw)}</td>'
+            f'<td class="col-ko">{esc(ko)}</td>'
+            f'<td class="col-remark"><span class="ingredient-badge{danger_class}">{esc(remark)}</span></td>'
+            '</tr>'
         )
-        cards.append(card)
-    cards.append('</div>')
-    st.markdown("".join(cards), unsafe_allow_html=True)
+
+    rows.append('</tbody></table></div>')
+    st.markdown("".join(rows), unsafe_allow_html=True)
 
 
 # ------------------------------------------------------------
@@ -1221,10 +1265,9 @@ for idx, data in enumerate(st.session_state["history"]):
     with tab_images:
         st.markdown('<div class="photo-section-title">📸 내가 촬영한 현품 사진</div>', unsafe_allow_html=True)
         if user_images:
-            user_cols = st.columns(1)
+            st.caption("현품 사진은 기존 대비 약 50% 폭으로 표시됩니다.")
             for u_idx, u_img in enumerate(user_images, start=1):
-                with user_cols[(u_idx - 1) % len(user_cols)]:
-                    st.image(u_img, caption=f"현품 사진 #{u_idx}", use_container_width=True)
+                render_compare_image(u_img, caption=f"현품 사진 #{u_idx}")
         else:
             st.info("촬영 사진이 없습니다.")
 
