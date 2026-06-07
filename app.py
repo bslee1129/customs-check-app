@@ -1260,49 +1260,45 @@ def decision_meta(decision_situation):
 
 
 def render_kv_card(title, rows, icon=""):
-    row_html = ""
+    """정보 카드를 HTML이 원문으로 노출되지 않도록 공백 없이 렌더링합니다."""
+    row_html = []
     for key, value in rows:
-        row_html += f"""
-        <div class="kv-row">
-            <div class="kv-key">{esc(key)}</div>
-            <div class="kv-value">{esc(value)}</div>
-        </div>
-        """
-    st.markdown(
-        f"""
-        <div class="info-card">
-            <div class="card-title">{esc(icon)} {esc(title)}</div>
-            {row_html}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        row_html.append(
+            f'<div class="kv-row">'
+            f'<div class="kv-key">{esc(key)}</div>'
+            f'<div class="kv-value">{esc(value)}</div>'
+            f'</div>'
+        )
 
+    html = (
+        '<div class="info-card">'
+        f'<div class="card-title">{esc(icon)} {esc(title)}</div>'
+        + "".join(row_html)
+        + '</div>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
 
 def render_result_header(idx, product_name, decision_situation, brand, barcode, reg_num, match_type):
     meta = decision_meta(decision_situation)
     display_name = product_name if product_name and product_name != "확인 불가" else "미상 물품"
-    st.markdown(
-        f"""
-        <div class="inspection-header">
-            <div class="inspection-topline">
-                <div>
-                    <div class="inspection-title">📦 [검사 기록 #{idx + 1}] {esc(display_name)}</div>
-                    <div class="inspection-subtitle">{esc(meta['subtitle'])}</div>
-                </div>
-                <div class="decision-pill {meta['class']}">{meta['icon']} {esc(meta['label'])}</div>
-            </div>
-            <div class="mini-grid">
-                <div class="mini-stat"><div class="mini-label">브랜드</div><div class="mini-value">{esc(brand)}</div></div>
-                <div class="mini-stat"><div class="mini-label">바코드</div><div class="mini-value">{esc(barcode)}</div></div>
-                <div class="mini-stat"><div class="mini-label">DB 등록번호</div><div class="mini-value">{esc(reg_num)}</div></div>
-                <div class="mini-stat"><div class="mini-label">매칭 방식</div><div class="mini-value">{esc(match_type)}</div></div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    html = (
+        '<div class="inspection-header">'
+        '<div class="inspection-topline">'
+        '<div>'
+        f'<div class="inspection-title">📦 [검사 기록 #{idx + 1}] {esc(display_name)}</div>'
+        f'<div class="inspection-subtitle">{esc(meta["subtitle"])}</div>'
+        '</div>'
+        f'<div class="decision-pill {meta["class"]}">{meta["icon"]} {esc(meta["label"])}</div>'
+        '</div>'
+        '<div class="mini-grid">'
+        f'<div class="mini-stat"><div class="mini-label">브랜드</div><div class="mini-value">{esc(brand)}</div></div>'
+        f'<div class="mini-stat"><div class="mini-label">바코드</div><div class="mini-value">{esc(barcode)}</div></div>'
+        f'<div class="mini-stat"><div class="mini-label">DB 등록번호</div><div class="mini-value">{esc(reg_num)}</div></div>'
+        f'<div class="mini-stat"><div class="mini-label">매칭 방식</div><div class="mini-value">{esc(match_type)}</div></div>'
+        '</div>'
+        '</div>'
     )
-
+    st.markdown(html, unsafe_allow_html=True)
 
 def get_match_display_text(decision_situation, match_type):
     if decision_situation == "금지":
@@ -1340,16 +1336,13 @@ def render_action_guide(decision_situation, reg_num, matched_row, product_name, 
         ]
 
     items = "".join(f"<li>{esc(item)}</li>" for item in rows)
-    st.markdown(
-        f"""
-        <div class="info-card">
-            <div class="card-title">📋 현장 조치 가이드</div>
-            <ul class="action-list">{items}</ul>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    html = (
+        '<div class="info-card">'
+        '<div class="card-title">📋 현장 조치 가이드</div>'
+        f'<ul class="action-list">{items}</ul>'
+        '</div>'
     )
-
+    st.markdown(html, unsafe_allow_html=True)
 
 def render_ingredients_table(translated_ingredients):
     """성분 화면을 모바일에서도 작게 보이는 압축 표 형태로 렌더링합니다."""
