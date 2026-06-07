@@ -1,6 +1,6 @@
-google-genai
 streamlit
 pandas
 pillow
 requests
 openpyxl
+google-genai
