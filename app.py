@@ -456,6 +456,82 @@ st.markdown("""
         }
     }
 
+
+
+    /* ---------- 제목 잘림 방지 최종 패치 ---------- */
+    .app-title-wrap {
+        display: grid !important;
+        grid-template-columns: 36px minmax(0, 1fr) !important;
+        align-items: center !important;
+        gap: 10px !important;
+        width: 100% !important;
+        height: auto !important;
+        min-height: 0 !important;
+        margin: 10px 0 12px 0 !important;
+        padding: 18px 0 14px 0 !important;
+        overflow: visible !important;
+        box-sizing: border-box !important;
+    }
+    .app-title-wrap img {
+        width: 32px !important;
+        height: 32px !important;
+        max-height: 32px !important;
+        object-fit: contain !important;
+        margin: 0 !important;
+        align-self: center !important;
+    }
+    .app-title-text {
+        display: block !important;
+        width: 100% !important;
+        min-width: 0 !important;
+        height: auto !important;
+        min-height: 0 !important;
+        margin: 0 !important;
+        padding: 0.24em 0 0.28em 0 !important;
+        color: #0f172a !important;
+        font-size: clamp(24px, 5.4vw, 34px) !important;
+        font-weight: 900 !important;
+        line-height: 1.55 !important;
+        letter-spacing: -0.045em !important;
+        word-break: keep-all !important;
+        overflow-wrap: break-word !important;
+        white-space: normal !important;
+        overflow: visible !important;
+        box-sizing: border-box !important;
+        transform: none !important;
+        -webkit-font-smoothing: antialiased;
+    }
+    .app-title-line { display: inline; }
+
+    @media (max-width: 480px) {
+        .block-container {
+            padding-top: 2.4rem !important;
+        }
+        .app-title-wrap {
+            grid-template-columns: 28px minmax(0, 1fr) !important;
+            gap: 8px !important;
+            padding-top: 20px !important;
+            padding-bottom: 14px !important;
+            margin-top: 0 !important;
+            margin-bottom: 10px !important;
+        }
+        .app-title-wrap img {
+            width: 26px !important;
+            height: 26px !important;
+            max-height: 26px !important;
+        }
+        .app-title-text {
+            font-size: clamp(21px, 7.2vw, 29px) !important;
+            line-height: 1.62 !important;
+            padding-top: 0.30em !important;
+            padding-bottom: 0.34em !important;
+            letter-spacing: -0.05em !important;
+        }
+        .app-title-line {
+            display: block;
+        }
+    }
+
     </style>
 """, unsafe_allow_html=True)
 
@@ -566,7 +642,7 @@ else:
 st.markdown(f"""
     <div class="app-title-wrap">
         <img src="{img_src}" alt="Korea Customs Service logo">
-        <div class="app-title-text" role="heading" aria-level="1">AI 위해식품 스마트 검사관</div>
+        <div class="app-title-text" role="heading" aria-level="1"><span class="app-title-line">AI 위해식품</span><span class="app-title-line">스마트 검사관</span></div>
     </div>
     <div class="guide-caption">
         💡 <b>[촬영 가이드]</b> 제품의 <b>전면, 후면, 성분표, 바코드</b>가 선명하게 보이도록 여러 장을 한 번에 올려주세요. 검사 기록은 계속 누적됩니다.
