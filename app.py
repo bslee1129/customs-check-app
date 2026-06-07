@@ -831,11 +831,21 @@ OCR_RESPONSE_SCHEMA = {
 }
 
 
-def build_gemini_generation_config():
+def _gemini_safety_settings():
+    """Gemini 안전 설정 공통값."""
+    return [
+        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+        types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+        types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+    ]
+
+
+def build_gemini_generation_config_structured():
     """
-    최신 Gemini API Structured outputs 방식 사용.
-    일반 response_mime_type만 쓰면 긴 성분표에서 쉼표 누락 JSON이 생길 수 있어
-    response_format + JSON Schema로 응답 구조를 강제합니다.
+    최신 Google GenAI SDK structured outputs 설정.
+    일부 Streamlit Cloud 환경의 google-genai 버전은 아직 response_format을 지원하지 않을 수 있으므로
+    호출 함수에서 실패 시 legacy 설정으로 자동 재시도합니다.
     """
     return {
         "response_format": {
@@ -845,13 +855,52 @@ def build_gemini_generation_config():
             }
         },
         "max_output_tokens": 16384,
-        "safety_settings": [
-            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
-            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
-            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
-        ],
+        "safety_settings": _gemini_safety_settings(),
     }
+
+
+def build_gemini_generation_config_legacy():
+    """
+    구버전 google-genai 호환 설정.
+    response_format 미지원 환경에서도 JSON 출력을 요청할 수 있도록 response_mime_type만 사용합니다.
+    """
+    try:
+        return types.GenerateContentConfig(
+            response_mime_type="application/json",
+            max_output_tokens=16384,
+            safety_settings=_gemini_safety_settings(),
+        )
+    except Exception:
+        return {
+            "response_mime_type": "application/json",
+            "max_output_tokens": 16384,
+            "safety_settings": _gemini_safety_settings(),
+        }
+
+
+def generate_content_with_sdk_compatibility(model, contents):
+    """
+    1차: 최신 structured output(response_format + schema)로 호출
+    2차: 설치된 google-genai가 response_format을 지원하지 않으면 legacy JSON 모드로 자동 재시도
+    """
+    try:
+        return client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=build_gemini_generation_config_structured(),
+        )
+    except Exception as first_error:
+        error_text = str(first_error)
+        # Streamlit Cloud의 구버전 google-genai에서 흔한 오류:
+        # "response_format Extra inputs are not permitted"
+        if "response_format" in error_text or "extra_forbidden" in error_text or "Extra inputs are not permitted" in error_text:
+            st.session_state["_gemini_config_mode"] = "legacy_response_mime_type"
+            return client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=build_gemini_generation_config_legacy(),
+            )
+        raise
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -1674,10 +1723,9 @@ if input_files:
                 st.error("API 키가 올바르게 설정되지 않아 AI를 호출할 수 없습니다.")
                 st.stop()
                 
-            response = client.models.generate_content(
+            response = generate_content_with_sdk_compatibility(
                 model=GEMINI_MODEL,
                 contents=ai_contents,
-                config=build_gemini_generation_config()
             )
 
             ocr_result = parse_gemini_json_response(response)
