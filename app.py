@@ -841,28 +841,10 @@ def _gemini_safety_settings():
     ]
 
 
-def build_gemini_generation_config_structured():
-    """
-    최신 Google GenAI SDK structured outputs 설정.
-    일부 Streamlit Cloud 환경의 google-genai 버전은 아직 response_format을 지원하지 않을 수 있으므로
-    호출 함수에서 실패 시 legacy 설정으로 자동 재시도합니다.
-    """
-    return {
-        "response_format": {
-            "text": {
-                "mime_type": "application/json",
-                "schema": OCR_RESPONSE_SCHEMA,
-            }
-        },
-        "max_output_tokens": 16384,
-        "safety_settings": _gemini_safety_settings(),
-    }
-
-
 def build_gemini_generation_config_legacy():
     """
-    구버전 google-genai 호환 설정.
-    response_format 미지원 환경에서도 JSON 출력을 요청할 수 있도록 response_mime_type만 사용합니다.
+    Streamlit Cloud에 설치된 google-genai 버전과 가장 호환성이 높은 설정입니다.
+    response_format은 일부 SDK에서 validation error가 발생하므로 사용하지 않습니다.
     """
     try:
         return types.GenerateContentConfig(
@@ -878,30 +860,73 @@ def build_gemini_generation_config_legacy():
         }
 
 
+def _get_fallback_models(primary_model: str) -> list[str]:
+    """
+    Gemini 3.5 Flash가 일시적 과부하(503)일 때 자동 대체할 모델 목록입니다.
+    Streamlit Secrets에 GEMINI_FALLBACK_MODELS="gemini-2.5-flash,gemini-2.5-flash-lite"처럼 지정 가능.
+    """
+    fallback_secret = st.secrets.get("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash,gemini-2.5-flash-lite")
+    models = [primary_model]
+    for item in str(fallback_secret).split(','):
+        m = item.strip()
+        if m and m not in models:
+            models.append(m)
+    return models
+
+
+def _is_retryable_gemini_error(error: Exception) -> bool:
+    """503/429/일시 과부하 계열 오류만 재시도 대상으로 판단합니다."""
+    error_text = str(error).lower()
+    retry_keywords = [
+        "503",
+        "unavailable",
+        "high demand",
+        "try again later",
+        "temporarily",
+        "timeout",
+        "deadline",
+        "rate limit",
+        "429",
+        "resource_exhausted",
+    ]
+    return any(k in error_text for k in retry_keywords)
+
+
 def generate_content_with_sdk_compatibility(model, contents):
     """
-    1차: 최신 structured output(response_format + schema)로 호출
-    2차: 설치된 google-genai가 response_format을 지원하지 않으면 legacy JSON 모드로 자동 재시도
+    Gemini 호출 안정화 버전.
+    - response_format은 SDK 버전에 따라 오류가 나므로 사용하지 않음
+    - response_mime_type="application/json" 방식으로 고정
+    - 503 UNAVAILABLE / high demand 발생 시 짧게 재시도 후 fallback 모델로 자동 전환
     """
-    try:
-        return client.models.generate_content(
-            model=model,
-            contents=contents,
-            config=build_gemini_generation_config_structured(),
-        )
-    except Exception as first_error:
-        error_text = str(first_error)
-        # Streamlit Cloud의 구버전 google-genai에서 흔한 오류:
-        # "response_format Extra inputs are not permitted"
-        if "response_format" in error_text or "extra_forbidden" in error_text or "Extra inputs are not permitted" in error_text:
-            st.session_state["_gemini_config_mode"] = "legacy_response_mime_type"
-            return client.models.generate_content(
-                model=model,
-                contents=contents,
-                config=build_gemini_generation_config_legacy(),
-            )
-        raise
+    last_error = None
+    candidate_models = _get_fallback_models(model)
 
+    for model_index, candidate_model in enumerate(candidate_models):
+        max_attempts = 2 if model_index == 0 else 1
+        for attempt in range(max_attempts):
+            try:
+                if candidate_model != model:
+                    st.info(f"Gemini 기본 모델이 혼잡하여 `{candidate_model}` 모델로 자동 재시도합니다.")
+
+                response = client.models.generate_content(
+                    model=candidate_model,
+                    contents=contents,
+                    config=build_gemini_generation_config_legacy(),
+                )
+                st.session_state["_last_gemini_model_used"] = candidate_model
+                return response
+
+            except Exception as error:
+                last_error = error
+                if not _is_retryable_gemini_error(error):
+                    raise
+                if attempt + 1 < max_attempts:
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                break
+
+    raise last_error
 
 def _strip_markdown_fences(text: str) -> str:
     text = (text or "").strip()
