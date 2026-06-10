@@ -23,6 +23,14 @@ import unicodedata
 from google import genai
 from google.genai import types
 
+
+# ------------------------------------------------------------
+# 사진 대조 화면 공통 크기 설정
+# - 현품 사진과 DB 원본 이미지를 동일한 카드/이미지 크기로 표시
+# - 현재 모바일 화면 기준 약 50% 축소 썸네일 크기
+# ------------------------------------------------------------
+COMPARE_IMAGE_SIZE_PX = 96
+
 # [보안] 정부 서버 SSL 인증서 미인증 경고 문구 출력 방지
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -245,6 +253,61 @@ st.markdown("""
         margin: 18px 0;
         border: none;
         border-top: 1px solid #e5e7eb;
+    }
+
+    .compare-strip {
+        display: flex;
+        flex-direction: row;
+        flex-wrap: nowrap;
+        gap: 8px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding: 8px 2px 12px 2px;
+        margin: 4px 0 12px 0;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: thin;
+    }
+    .compare-thumb-card {
+        flex: 0 0 auto;
+        width: var(--thumb-w, 96px);
+        min-width: var(--thumb-w, 96px);
+        max-width: var(--thumb-w, 96px);
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        background: #ffffff;
+        padding: 6px;
+        box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+        box-sizing: border-box;
+    }
+    .compare-thumb-img {
+        display: block;
+        width: 100%;
+        height: var(--thumb-h, 96px);
+        min-height: var(--thumb-h, 96px);
+        max-height: var(--thumb-h, 96px);
+        object-fit: contain;
+        border-radius: 9px;
+        background: #f8fafc;
+    }
+    .compare-thumb-caption {
+        margin-top: 4px;
+        font-size: 0.70rem;
+        color: #475569;
+        font-weight: 800;
+        text-align: center;
+        line-height: 1.2;
+        word-break: keep-all;
+    }
+    .compare-thumb-link {
+        min-height: 13px;
+        margin-top: 2px;
+        font-size: 0.68rem;
+        text-align: center;
+    }
+    .compare-thumb-link a {
+        color: #2563eb;
+        text-decoration: none;
+        font-weight: 800;
     }
 
     div[data-testid="stTabs"] button {
@@ -606,64 +669,96 @@ def fetch_db_image_bytes(url):
     return res.content, res.headers.get("Content-Type", "")
 
 
-def render_compare_image(image_source, caption, link_url=None):
-    """사진 대조 탭 이미지를 기존 대비 약 50% 폭으로 가운데 표시합니다."""
-    left, mid, right = st.columns([1, 2, 1])
-    with mid:
-        if link_url:
-            st.markdown(f"<div style='font-size:0.82rem; margin-bottom:4px;'>🔗 <a href='{esc(link_url)}' target='_blank'>원본 링크 열기</a></div>", unsafe_allow_html=True)
-        st.image(image_source, caption=caption, use_container_width=True)
+def image_to_data_url(image_source, max_size=(900, 900), quality=82):
+    """PIL 이미지를 브라우저에서 바로 표시 가능한 data URL로 변환합니다."""
+    try:
+        img = image_source.copy() if hasattr(image_source, "copy") else image_source
+        if not isinstance(img, Image.Image):
+            return ""
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        img.thumbnail(max_size)
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=quality, optimize=True)
+        encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        return f"data:image/jpeg;base64,{encoded}"
+    except Exception:
+        return ""
+
+
+def render_horizontal_image_strip(items, title, empty_message="표시할 이미지가 없습니다.", item_width_px=COMPARE_IMAGE_SIZE_PX, item_height_px=COMPARE_IMAGE_SIZE_PX):
+    """
+    사진을 탭/세로 나열 없이 가로 스크롤 줄로 표시합니다.
+    item_width_px와 item_height_px를 함께 사용하여 현품 사진과 DB 원본 이미지를 동일한 크기로 맞춥니다.
+    """
+    st.markdown(f'<div class="photo-section-title">{esc(title)}</div>', unsafe_allow_html=True)
+    if not items:
+        st.info(empty_message)
+        return
+
+    cards = []
+    for idx, item in enumerate(items, start=1):
+        src = item.get("src", "")
+        caption = item.get("caption", f"사진 #{idx}")
+        link = item.get("link", "")
+        if not src:
+            continue
+        link_html = f"<a href='{esc(link)}' target='_blank'>원본</a>" if link else ""
+        cards.append(
+            "<div class='compare-thumb-card'>"
+            f"<img class='compare-thumb-img' src='{esc(src)}' alt='{esc(caption)}'>"
+            f"<div class='compare-thumb-caption'>{esc(caption)}</div>"
+            f"<div class='compare-thumb-link'>{link_html}</div>"
+            "</div>"
+        )
+
+    if not cards:
+        st.info(empty_message)
+        return
+
+    html = (
+        f"<div class='compare-strip' style='--thumb-w:{int(item_width_px)}px; --thumb-h:{int(item_height_px)}px;'>"
+        + "".join(cards)
+        + "</div>"
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def render_user_original_images(user_images):
+    """내가 촬영한 현품 사진을 등록된 개수만큼 모두 가로로 표시합니다."""
+    items = []
+    for idx, img in enumerate(user_images or [], start=1):
+        data_url = image_to_data_url(img, max_size=(COMPARE_IMAGE_SIZE_PX * 4, COMPARE_IMAGE_SIZE_PX * 4))
+        if data_url:
+            items.append({"src": data_url, "caption": f"현품 #{idx}"})
+    render_horizontal_image_strip(
+        items,
+        "📸 내가 촬영한 현품 사진",
+        empty_message="촬영 사진이 없습니다.",
+        item_width_px=COMPARE_IMAGE_SIZE_PX,
+        item_height_px=COMPARE_IMAGE_SIZE_PX,
+    )
 
 
 def render_db_original_images(url_data, key_prefix=None):
-    """DB 등록 원본 이미지를 50% 축소 폭으로 표시합니다."""
-    if key_prefix is None:
-        st.session_state["_db_img_render_counter"] = st.session_state.get("_db_img_render_counter", 0) + 1
-        key_prefix = f"db_img_{st.session_state['_db_img_render_counter']}"
-
+    """DB 등록 원본 이미지를 탭/라디오 없이 가로 썸네일로 빠르게 표시합니다."""
     urls = split_image_urls(url_data)
     if not urls:
         st.info("DB에 등록된 원본 사진 URL이 없습니다.")
         return
 
-    st.markdown('<div class="photo-section-title">🔗 DB 등록 원본 이미지</div>', unsafe_allow_html=True)
-    st.caption(f"비교 대조용 DB 이미지 {len(urls)}건 · 사진은 기존 대비 약 50% 폭으로 표시됩니다.")
+    items = []
+    for idx, url in enumerate(urls, start=1):
+        items.append({"src": url, "caption": f"DB #{idx}", "link": url})
 
-    view_mode = st.radio(
-        "DB 이미지 표시 방식",
-        ["빠른 표시", "안정 표시"],
-        horizontal=True,
-        key=f"{key_prefix}_view_mode",
-        label_visibility="collapsed",
-        help="빠른 표시는 URL을 바로 보여주므로 가장 빠릅니다. 보이지 않으면 안정 표시를 선택하세요.",
+    render_horizontal_image_strip(
+        items,
+        f"🔗 DB 등록 원본 이미지 ({len(urls)}건)",
+        empty_message="DB에 등록된 원본 사진 URL이 없습니다.",
+        item_width_px=COMPARE_IMAGE_SIZE_PX,
+        item_height_px=COMPARE_IMAGE_SIZE_PX,
     )
 
-    max_show = min(len(urls), 6)
-    if len(urls) > max_show:
-        st.info(f"이미지가 {len(urls)}개라서 처음 {max_show}개만 표시합니다.")
-
-    for i, url in enumerate(urls[:max_show], start=1):
-        st.markdown(f"**DB 이미지 #{i}**")
-        if view_mode == "빠른 표시":
-            try:
-                render_compare_image(url, caption=f"DB 원본 이미지 #{i}", link_url=url)
-            except Exception as e:
-                st.error(f"빠른 표시 실패: {e}")
-                st.info("상단 표시 방식을 '안정 표시'로 바꿔 보세요.")
-        else:
-            try:
-                content, content_type = fetch_db_image_bytes(url)
-                try:
-                    db_img = Image.open(io.BytesIO(content))
-                    db_img.thumbnail((520, 520))
-                    render_compare_image(db_img, caption=f"DB 원본 이미지 #{i}", link_url=url)
-                except Exception:
-                    if "svg" in str(content_type).lower() or "image" in str(content_type).lower():
-                        render_compare_image(url, caption=f"DB 원본 이미지 #{i}", link_url=url)
-                    else:
-                        st.error(f"이미지 형식 인식 실패: Content-Type={content_type or '확인 불가'}")
-            except Exception as e:
-                st.error(f"이미지 로딩 실패: {e}")
 
 if os.path.exists(logo_path):
     img_src = f"data:image/png;base64,{get_base64_of_bin_file(logo_path)}"
@@ -1430,86 +1525,79 @@ for idx, data in enumerate(st.session_state["history"]):
 
     render_result_header(idx, product_name, decision_situation, brand, barcode, reg_num, match_type)
 
-    tab_summary, tab_ingredients, tab_images = st.tabs(["📌 요약", "🧪 성분", "📷 사진 대조"])
+    # 탭 분리 없이 결과 전체를 한 화면에 순서대로 표시합니다.
+    st.markdown('<hr class="compact-hr">', unsafe_allow_html=True)
 
-    with tab_summary:
-        col1, col2 = st.columns(2)
-        with col1:
-            render_kv_card(
-                "OCR 분석 정보",
-                [
-                    ("촬영 사진", f"{len(user_images)}장"),
-                    ("식별 브랜드", brand),
-                    ("식별 제품명", product_name),
-                    ("식별 번역명", translated_product_name if translated_product_name else "해당없음"),
-                    ("식별 바코드", barcode),
-                ],
-                icon="🔎",
-            )
-        with col2:
-            render_kv_card(
-                "DB 대조 결과",
-                [
-                    ("등록번호", reg_num),
-                    ("매칭 상태", display_match_text),
-                    ("성분 단독 매칭", "예" if is_ingredient_only_match else "아니오"),
-                    ("부분/파생 매칭", "예" if is_ambiguous_multilingual else "아니오"),
-                    ("일치 성분", matched_ingredient_str if matched_ingredient_str else "해당없음"),
-                ],
-                icon="🧾",
-            )
-
-        if matched_row is not None:
-            render_kv_card(
-                "불법의약품DB 상세 정보",
-                [
-                    ("제품명(DB)", get_clean_db_value(matched_row, "제품명")),
-                    ("성분명(DB)", get_clean_db_value(matched_row, "성분명")),
-                    ("정보 출처", get_clean_db_value(matched_row, "정보출처")),
-                    ("통관 보류 사유", get_clean_db_value(matched_row, "통관보류사유내용")),
-                    ("상세 내용", get_clean_db_value(matched_row, "상세내용")),
-                    ("법적 관련 근거", get_clean_db_value(matched_row, "관련근거")),
-                ],
-                icon="📚",
-            )
-        else:
-            st.markdown(
-                '<div class="soft-note">현재 DB 기준으로 일치하는 위해 규제 이력이 확인되지 않았습니다.</div>',
-                unsafe_allow_html=True,
-            )
-
-        render_action_guide(decision_situation, reg_num, matched_row, product_name, is_ingredient_only_match)
-
-    with tab_ingredients:
-        suspicious_count = sum(
-            1
-            for ing in translated_ingredients
-            if any(kw in str(ing.get("remark", "")).lower() for kw in ["위해", "의심", "danger"])
+    col1, col2 = st.columns(2)
+    with col1:
+        render_kv_card(
+            "OCR 분석 정보",
+            [
+                ("촬영 사진", f"{len(user_images)}장"),
+                ("식별 브랜드", brand),
+                ("식별 제품명", product_name),
+                ("식별 번역명", translated_product_name if translated_product_name else "해당없음"),
+                ("식별 바코드", barcode),
+            ],
+            icon="🔎",
         )
+    with col2:
+        render_kv_card(
+            "DB 대조 결과",
+            [
+                ("등록번호", reg_num),
+                ("매칭 상태", display_match_text),
+                ("성분 단독 매칭", "예" if is_ingredient_only_match else "아니오"),
+                ("부분/파생 매칭", "예" if is_ambiguous_multilingual else "아니오"),
+                ("일치 성분", matched_ingredient_str if matched_ingredient_str else "해당없음"),
+            ],
+            icon="🧾",
+        )
+
+    if matched_row is not None:
+        render_kv_card(
+            "불법의약품DB 상세 정보",
+            [
+                ("제품명(DB)", get_clean_db_value(matched_row, "제품명")),
+                ("성분명(DB)", get_clean_db_value(matched_row, "성분명")),
+                ("정보 출처", get_clean_db_value(matched_row, "정보출처")),
+                ("통관 보류 사유", get_clean_db_value(matched_row, "통관보류사유내용")),
+                ("상세 내용", get_clean_db_value(matched_row, "상세내용")),
+                ("법적 관련 근거", get_clean_db_value(matched_row, "관련근거")),
+            ],
+            icon="📚",
+        )
+    else:
         st.markdown(
-            f"**성분 추출 결과:** 총 {len(translated_ingredients)}개"
-            + (f" / 위해성분 의심 {suspicious_count}건" if suspicious_count else "")
+            '<div class="soft-note">현재 DB 기준으로 일치하는 위해 규제 이력이 확인되지 않았습니다.</div>',
+            unsafe_allow_html=True,
         )
-        render_ingredients_table(translated_ingredients)
 
-    with tab_images:
-        st.markdown('<div class="photo-section-title">📸 내가 촬영한 현품 사진</div>', unsafe_allow_html=True)
-        if user_images:
-            st.caption("현품 사진은 기존 대비 약 50% 폭으로 표시됩니다.")
-            for u_idx, u_img in enumerate(user_images, start=1):
-                render_compare_image(u_img, caption=f"현품 사진 #{u_idx}")
+    render_action_guide(decision_situation, reg_num, matched_row, product_name, is_ingredient_only_match)
+
+    suspicious_count = sum(
+        1
+        for ing in translated_ingredients
+        if any(kw in str(ing.get("remark", "")).lower() for kw in ["위해", "의심", "danger"])
+    )
+    st.markdown('<hr class="compact-hr">', unsafe_allow_html=True)
+    st.markdown(
+        f"**🧪 성분 추출 결과:** 총 {len(translated_ingredients)}개"
+        + (f" / 위해성분 의심 {suspicious_count}건" if suspicious_count else "")
+    )
+    render_ingredients_table(translated_ingredients)
+
+    st.markdown('<hr class="compact-hr">', unsafe_allow_html=True)
+    st.markdown("**📷 사진 대조**")
+    render_user_original_images(user_images)
+
+    if matched_row is not None and decision_situation != "제한B":
+        render_db_original_images(matched_row.get("원본이미지URL", ""), key_prefix=f"history_{idx}")
+    else:
+        if decision_situation == "승인":
+            st.success("통관 가능 판정으로 대조할 DB 위해사진이 없습니다.")
         else:
-            st.info("촬영 사진이 없습니다.")
-
-        st.markdown('<hr class="compact-hr">', unsafe_allow_html=True)
-
-        if matched_row is not None and decision_situation != "제한B":
-            render_db_original_images(matched_row.get("원본이미지URL", ""), key_prefix=f"history_{idx}")
-        else:
-            if decision_situation == "승인":
-                st.success("통관 가능 판정으로 대조할 DB 위해사진이 없습니다.")
-            else:
-                st.info("대조할 DB 원본 사진이 없습니다.")
+            st.info("대조할 DB 원본 사진이 없습니다.")
 
 
 # ------------------------------------------------------------
