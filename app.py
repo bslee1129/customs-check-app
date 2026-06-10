@@ -27,9 +27,9 @@ from google.genai import types
 # ------------------------------------------------------------
 # 사진 대조 화면 공통 크기 설정
 # - 현품 사진과 DB 원본 이미지를 동일한 카드/이미지 크기로 표시
-# - 현재 모바일 화면 기준 약 50% 축소 썸네일 크기
+# - 요청 반영: 기존 96px 대비 3배 크기(288px) 썸네일
 # ------------------------------------------------------------
-COMPARE_IMAGE_SIZE_PX = 96
+COMPARE_IMAGE_SIZE_PX = 288
 
 # [보안] 정부 서버 SSL 인증서 미인증 경고 문구 출력 방지
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
