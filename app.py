@@ -781,12 +781,29 @@ gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 client = None
 
 # ------------------------------------------------------------
-# Gemini 최신 모델 설정
+# Gemini 모델 및 자동 대체(fallback) 설정
 # ------------------------------------------------------------
-# 기본값: 최신 Flash 계열 모델
-# 필요 시 Streamlit Secrets에서 GEMINI_MODEL 값으로 모델 변경 가능
-# 기본값: Gemini 3.5 Flash
-GEMINI_MODEL = st.secrets.get("GEMINI_MODEL", "gemini-3.5-flash")
+# 1순위 기본 모델: Gemini 3.5 Flash
+# 기본 모델이 503/429 과부하, 일시 장애, 모델 접근 불가 등의 사유로 실패하면
+# 아래 순서대로 자동 전환합니다.
+#
+#   1) gemini-3.1-flash-lite
+#   2) gemini-3-flash-preview
+#   3) gemini-2.5-flash
+#   4) gemini-2.5-flash-lite
+#
+# Streamlit Secrets에서 GEMINI_MODEL 또는 GEMINI_FALLBACK_MODELS를 지정하면
+# 배포 후에도 코드를 수정하지 않고 모델 순서를 바꿀 수 있습니다.
+GEMINI_MODEL = str(
+    st.secrets.get("GEMINI_MODEL", "gemini-3.5-flash")
+).strip() or "gemini-3.5-flash"
+
+DEFAULT_GEMINI_FALLBACK_MODELS = [
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+]
 
 if gemini_key:
     try:
@@ -957,20 +974,35 @@ def build_gemini_generation_config_legacy():
 
 def _get_fallback_models(primary_model: str) -> list[str]:
     """
-    Gemini 3.5 Flash가 일시적 과부하(503)일 때 자동 대체할 모델 목록입니다.
-    Streamlit Secrets에 GEMINI_FALLBACK_MODELS="gemini-2.5-flash,gemini-2.5-flash-lite"처럼 지정 가능.
+    Gemini 호출 후보 모델을 우선순위대로 반환합니다.
+
+    기본 순서:
+      1. gemini-3.5-flash
+      2. gemini-3.1-flash-lite
+      3. gemini-3-flash-preview
+      4. gemini-2.5-flash
+      5. gemini-2.5-flash-lite
+
+    Streamlit Secrets 예시:
+      GEMINI_MODEL = "gemini-3.5-flash"
+      GEMINI_FALLBACK_MODELS = "gemini-3.1-flash-lite,gemini-3-flash-preview,gemini-2.5-flash,gemini-2.5-flash-lite"
     """
-    fallback_secret = st.secrets.get("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash,gemini-2.5-flash-lite")
-    models = [primary_model]
-    for item in str(fallback_secret).split(','):
-        m = item.strip()
-        if m and m not in models:
-            models.append(m)
+    fallback_default = ",".join(DEFAULT_GEMINI_FALLBACK_MODELS)
+    fallback_secret = st.secrets.get(
+        "GEMINI_FALLBACK_MODELS",
+        fallback_default,
+    )
+
+    models = []
+    for item in [primary_model, *str(fallback_secret).split(",")]:
+        candidate = str(item).strip()
+        if candidate and candidate not in models:
+            models.append(candidate)
     return models
 
 
 def _is_retryable_gemini_error(error: Exception) -> bool:
-    """503/429/일시 과부하 계열 오류만 재시도 대상으로 판단합니다."""
+    """동일 모델을 잠시 기다렸다가 다시 호출할 오류인지 판단합니다."""
     error_text = str(error).lower()
     retry_keywords = [
         "503",
@@ -979,49 +1011,103 @@ def _is_retryable_gemini_error(error: Exception) -> bool:
         "try again later",
         "temporarily",
         "timeout",
+        "timed out",
         "deadline",
         "rate limit",
         "429",
         "resource_exhausted",
+        "internal",
+        "500",
+        "502",
+        "504",
     ]
-    return any(k in error_text for k in retry_keywords)
+    return any(keyword in error_text for keyword in retry_keywords)
+
+
+def _is_model_switch_error(error: Exception) -> bool:
+    """
+    현재 모델을 더 재시도하지 않고 다음 후보 모델로 전환할 오류인지 판단합니다.
+
+    Preview 모델의 지역/계정 미지원, 모델 폐기, 잘못된 모델 ID처럼
+    특정 모델에만 해당할 가능성이 있는 오류를 포함합니다.
+    """
+    error_text = str(error).lower()
+    switch_keywords = [
+        "404",
+        "not_found",
+        "not found",
+        "model is not found",
+        "model not found",
+        "unsupported model",
+        "not supported",
+        "is not available",
+        "not available in your region",
+        "permission_denied",
+        "permission denied",
+        "403",
+        "invalid_argument",
+        "invalid argument",
+        "400",
+        "deprecated",
+        "shut down",
+    ]
+    return any(keyword in error_text for keyword in switch_keywords)
 
 
 def generate_content_with_sdk_compatibility(model, contents):
     """
     Gemini 호출 안정화 버전.
-    - response_format은 SDK 버전에 따라 오류가 나므로 사용하지 않음
-    - response_mime_type="application/json" 방식으로 고정
-    - 503 UNAVAILABLE / high demand 발생 시 짧게 재시도 후 fallback 모델로 자동 전환
+
+    - 구버전 google-genai SDK와 호환되는 response_mime_type 방식을 사용합니다.
+    - 기본 모델은 최대 2회, 각 대체 모델은 1회 호출합니다.
+    - 503/429/500 계열 일시 오류는 잠시 대기 후 재시도합니다.
+    - 모델 미지원/폐기/접근 불가 오류는 다음 대체 모델로 넘어갑니다.
+    - 실제 성공한 모델명은 st.session_state['_last_gemini_model_used']에 저장합니다.
     """
     last_error = None
     candidate_models = _get_fallback_models(model)
 
     for model_index, candidate_model in enumerate(candidate_models):
         max_attempts = 2 if model_index == 0 else 1
+
         for attempt in range(max_attempts):
             try:
-                if candidate_model != model:
-                    st.info(f"Gemini 기본 모델이 혼잡하여 `{candidate_model}` 모델로 자동 재시도합니다.")
+                if model_index > 0 and attempt == 0:
+                    st.info(
+                        f"이전 Gemini 모델 호출이 실패하여 "
+                        f"`{candidate_model}` 모델로 자동 전환합니다."
+                    )
 
                 response = client.models.generate_content(
                     model=candidate_model,
                     contents=contents,
                     config=build_gemini_generation_config_legacy(),
                 )
+
                 st.session_state["_last_gemini_model_used"] = candidate_model
                 return response
 
             except Exception as error:
                 last_error = error
-                if not _is_retryable_gemini_error(error):
-                    raise
-                if attempt + 1 < max_attempts:
-                    time.sleep(1.5 * (attempt + 1))
-                    continue
-                break
+                retryable = _is_retryable_gemini_error(error)
+                switchable = _is_model_switch_error(error)
 
-    raise last_error
+                if retryable and attempt + 1 < max_attempts:
+                    wait_seconds = 1.5 * (attempt + 1)
+                    time.sleep(wait_seconds)
+                    continue
+
+                if retryable or switchable:
+                    # 현재 후보 모델을 포기하고 다음 모델로 전환합니다.
+                    break
+
+                # 인증키 오류, 요청 형식 오류 등 모델을 바꿔도 해결되지 않을 가능성이
+                # 높은 오류는 즉시 상위 예외 처리로 전달합니다.
+                raise
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("사용 가능한 Gemini 모델 후보가 없습니다.")
 
 def _strip_markdown_fences(text: str) -> str:
     text = (text or "").strip()
@@ -1835,6 +1921,12 @@ if input_files:
             )
 
             ocr_result = parse_gemini_json_response(response)
+            used_gemini_model = st.session_state.get("_last_gemini_model_used", GEMINI_MODEL)
+            status_box.status(
+                f"✅ 1단계 완료: `{used_gemini_model}` 모델이 이미지를 판독했습니다.",
+                expanded=False,
+                state="complete",
+            )
             
             brand = ensure_text(ocr_result.get('brand'), '확인 불가')
             product_name = ensure_text(ocr_result.get('product_name'), '확인 불가')
