@@ -781,27 +781,33 @@ gemini_key = st.secrets.get("GEMINI_API_KEY", "")
 client = None
 
 # ------------------------------------------------------------
-# Gemini 모델 및 자동 대체(fallback) 설정
+# OCR 사진 판독용 Gemini 모델 및 자동 대체(fallback) 설정
 # ------------------------------------------------------------
-# 1순위 기본 모델: Gemini 3.5 Flash
-# 기본 모델이 503/429 과부하, 일시 장애, 모델 접근 불가 등의 사유로 실패하면
-# 아래 순서대로 자동 전환합니다.
+# OCR 정확도, 다국어 라벨 인식, 성분표 판독을 우선한 순서입니다.
 #
-#   1) gemini-3.1-flash-lite
-#   2) gemini-3-flash-preview
-#   3) gemini-2.5-flash
-#   4) gemini-2.5-flash-lite
+# 기본 모델
+#   1) gemini-3.5-flash
 #
-# Streamlit Secrets에서 GEMINI_MODEL 또는 GEMINI_FALLBACK_MODELS를 지정하면
-# 배포 후에도 코드를 수정하지 않고 모델 순서를 바꿀 수 있습니다.
-GEMINI_MODEL = str(
+# 자동 대체 모델
+#   2) gemini-3-flash-preview   : 멀티모달/이미지 이해 우선
+#   3) gemini-2.5-flash         : 안정적인 멀티모달·대량 처리
+#   4) gemini-3.1-flash-lite    : 비용·속도 절약형
+#   5) gemini-2.5-flash-lite    : 최종 저비용 대체 모델
+#
+# API 과부하뿐 아니라 JSON 파싱 실패, 빈 OCR 결과가 발생해도
+# 동일 모델 재시도 후 다음 모델로 자동 전환합니다.
+# Streamlit Secrets에서 순서를 변경할 수도 있습니다.
+OCR_PRIMARY_MODEL = str(
     st.secrets.get("GEMINI_MODEL", "gemini-3.5-flash")
 ).strip() or "gemini-3.5-flash"
 
+# 기존 코드와의 호환성을 위해 GEMINI_MODEL 별칭을 유지합니다.
+GEMINI_MODEL = OCR_PRIMARY_MODEL
+
 DEFAULT_GEMINI_FALLBACK_MODELS = [
-    "gemini-3.1-flash-lite",
     "gemini-3-flash-preview",
     "gemini-2.5-flash",
+    "gemini-3.1-flash-lite",
     "gemini-2.5-flash-lite",
 ]
 
@@ -976,16 +982,16 @@ def _get_fallback_models(primary_model: str) -> list[str]:
     """
     Gemini 호출 후보 모델을 우선순위대로 반환합니다.
 
-    기본 순서:
+    OCR 사진 판독 기본 순서:
       1. gemini-3.5-flash
-      2. gemini-3.1-flash-lite
-      3. gemini-3-flash-preview
-      4. gemini-2.5-flash
+      2. gemini-3-flash-preview
+      3. gemini-2.5-flash
+      4. gemini-3.1-flash-lite
       5. gemini-2.5-flash-lite
 
     Streamlit Secrets 예시:
       GEMINI_MODEL = "gemini-3.5-flash"
-      GEMINI_FALLBACK_MODELS = "gemini-3.1-flash-lite,gemini-3-flash-preview,gemini-2.5-flash,gemini-2.5-flash-lite"
+      GEMINI_FALLBACK_MODELS = "gemini-3-flash-preview,gemini-2.5-flash,gemini-3.1-flash-lite,gemini-2.5-flash-lite"
     """
     fallback_default = ",".join(DEFAULT_GEMINI_FALLBACK_MODELS)
     fallback_secret = st.secrets.get(
@@ -1045,37 +1051,55 @@ def _is_model_switch_error(error: Exception) -> bool:
         "permission_denied",
         "permission denied",
         "403",
-        "invalid_argument",
-        "invalid argument",
-        "400",
         "deprecated",
         "shut down",
     ]
     return any(keyword in error_text for keyword in switch_keywords)
 
 
-def generate_content_with_sdk_compatibility(model, contents):
-    """
-    Gemini 호출 안정화 버전.
+class OCRResponseError(ValueError):
+    """API 응답은 도착했지만 OCR JSON이 불완전하거나 사용할 수 없을 때 발생합니다."""
 
-    - 구버전 google-genai SDK와 호환되는 response_mime_type 방식을 사용합니다.
-    - 기본 모델은 최대 2회, 각 대체 모델은 1회 호출합니다.
-    - 503/429/500 계열 일시 오류는 잠시 대기 후 재시도합니다.
-    - 모델 미지원/폐기/접근 불가 오류는 다음 대체 모델로 넘어갑니다.
-    - 실제 성공한 모델명은 st.session_state['_last_gemini_model_used']에 저장합니다.
+
+def _is_usable_ocr_result(ocr_result: dict) -> bool:
+    """제품명·바코드·성분 중 하나 이상이 식별되었는지 확인합니다."""
+    if not isinstance(ocr_result, dict):
+        return False
+
+    product_name = ensure_text(ocr_result.get("product_name"), "")
+    barcode = normalize_barcode(ocr_result.get("barcode"))
+    ingredients = ensure_ingredient_list(ocr_result.get("translated_ingredients"))
+
+    valid_product = product_name not in ["", "확인 불가", "미상", "unknown"]
+    return bool(valid_product or barcode or ingredients)
+
+
+def generate_ocr_with_model_fallback(model, contents):
+    """
+    OCR 사진 판독 전용 Gemini 호출 함수입니다.
+
+    동작 방식
+    - 기본 모델은 최대 2회 호출합니다.
+    - 대체 모델은 순서대로 1회씩 호출합니다.
+    - 503/429/500/timeout은 재시도 후 다음 모델로 전환합니다.
+    - 모델 미지원·지역 제한·폐기는 즉시 다음 모델로 전환합니다.
+    - JSON 파싱 실패, 응답 잘림, 제품명·바코드·성분이 모두 비어 있는 경우에도
+      OCR 실패로 판단하여 다음 모델로 자동 전환합니다.
+    - 실제 성공 모델과 시도 이력을 session_state에 저장합니다.
     """
     last_error = None
     candidate_models = _get_fallback_models(model)
+    attempt_history = []
 
     for model_index, candidate_model in enumerate(candidate_models):
         max_attempts = 2 if model_index == 0 else 1
 
         for attempt in range(max_attempts):
+            attempt_no = attempt + 1
             try:
                 if model_index > 0 and attempt == 0:
                     st.info(
-                        f"이전 Gemini 모델 호출이 실패하여 "
-                        f"`{candidate_model}` 모델로 자동 전환합니다."
+                        f"OCR 판독을 `{candidate_model}` 모델로 자동 전환합니다."
                     )
 
                 response = client.models.generate_content(
@@ -1084,30 +1108,67 @@ def generate_content_with_sdk_compatibility(model, contents):
                     config=build_gemini_generation_config_legacy(),
                 )
 
+                try:
+                    ocr_result = parse_gemini_json_response(response)
+                except Exception as parse_error:
+                    raise OCRResponseError(
+                        f"{candidate_model} OCR JSON 파싱 실패: {parse_error}"
+                    ) from parse_error
+
+                if not _is_usable_ocr_result(ocr_result):
+                    raise OCRResponseError(
+                        f"{candidate_model} 응답에서 제품명·바코드·성분을 식별하지 못했습니다."
+                    )
+
+                attempt_history.append({
+                    "model": candidate_model,
+                    "attempt": attempt_no,
+                    "status": "success",
+                })
                 st.session_state["_last_gemini_model_used"] = candidate_model
-                return response
+                st.session_state["_gemini_ocr_attempt_history"] = attempt_history
+                return ocr_result, candidate_model
+
+            except OCRResponseError as error:
+                last_error = error
+                attempt_history.append({
+                    "model": candidate_model,
+                    "attempt": attempt_no,
+                    "status": "ocr_response_error",
+                    "error": str(error)[:300],
+                })
+
+                # 기본 모델은 같은 모델로 한 번 더 판독한 뒤 다음 모델로 넘어갑니다.
+                if attempt + 1 < max_attempts:
+                    time.sleep(0.8)
+                    continue
+                break
 
             except Exception as error:
                 last_error = error
                 retryable = _is_retryable_gemini_error(error)
                 switchable = _is_model_switch_error(error)
+                attempt_history.append({
+                    "model": candidate_model,
+                    "attempt": attempt_no,
+                    "status": "api_error",
+                    "error": str(error)[:300],
+                })
 
                 if retryable and attempt + 1 < max_attempts:
-                    wait_seconds = 1.5 * (attempt + 1)
-                    time.sleep(wait_seconds)
+                    time.sleep(1.5 * attempt_no)
                     continue
 
                 if retryable or switchable:
-                    # 현재 후보 모델을 포기하고 다음 모델로 전환합니다.
                     break
 
-                # 인증키 오류, 요청 형식 오류 등 모델을 바꿔도 해결되지 않을 가능성이
-                # 높은 오류는 즉시 상위 예외 처리로 전달합니다.
+                st.session_state["_gemini_ocr_attempt_history"] = attempt_history
                 raise
 
+    st.session_state["_gemini_ocr_attempt_history"] = attempt_history
     if last_error is not None:
         raise last_error
-    raise RuntimeError("사용 가능한 Gemini 모델 후보가 없습니다.")
+    raise RuntimeError("OCR 사진 판독에 사용할 수 있는 Gemini 모델 후보가 없습니다.")
 
 def _strip_markdown_fences(text: str) -> str:
     text = (text or "").strip()
@@ -1908,20 +1969,17 @@ if input_files:
 
         brand, product_name, translated_product_name, barcode, translated_ingredients, package_features, multilingual_candidates = '확인 불가', '확인 불가', '', '바코드 확인 불가', [], '', []
         
-        status_box.status(f"🚀 1단계: Google Gemini 최신 비전 엔진({GEMINI_MODEL})이 이미지를 판독하고 있습니다...", expanded=False)
+        status_box.status(f"🚀 1단계: OCR 비전 모델 `{OCR_PRIMARY_MODEL}`이 제품 사진을 판독하고 있습니다...", expanded=False)
         
         try:
             if client is None:
                 st.error("API 키가 올바르게 설정되지 않아 AI를 호출할 수 없습니다.")
                 st.stop()
                 
-            response = generate_content_with_sdk_compatibility(
-                model=GEMINI_MODEL,
+            ocr_result, used_gemini_model = generate_ocr_with_model_fallback(
+                model=OCR_PRIMARY_MODEL,
                 contents=ai_contents,
             )
-
-            ocr_result = parse_gemini_json_response(response)
-            used_gemini_model = st.session_state.get("_last_gemini_model_used", GEMINI_MODEL)
             status_box.status(
                 f"✅ 1단계 완료: `{used_gemini_model}` 모델이 이미지를 판독했습니다.",
                 expanded=False,
@@ -2087,6 +2145,7 @@ if input_files:
             "is_ingredient_only_match": is_ingredient_only_match,
             "is_ambiguous_multilingual": is_ambiguous_multilingual,
             "matched_ingredient_str": matched_ingredient_str,
+            "gemini_model_used": used_gemini_model,
         }
         
         st.session_state["history"].append(report_data)
