@@ -18,6 +18,7 @@ from email.mime.multipart import MIMEMultipart
 import traceback
 import datetime
 import unicodedata
+from difflib import SequenceMatcher
 
 # [최신 Gemini API] Google GenAI SDK 규격
 from google import genai
@@ -1438,6 +1439,259 @@ def normalize_barcode(value):
     # 숫자와 영문만 남김. 하이픈/공백 제거.
     return re.sub(r"[^0-9a-zA-Z]", "", text).lower()
 
+
+# 제품명 또는 성분명만으로 잘못된 DB 행이 연결되는 것을 방지하기 위한 공통 설정
+COMMON_INGREDIENT_TOKENS = {
+    "water", "정제수", "purifiedwater", "aqua", "물",
+    "gelatin", "젤라틴", "glycerin", "글리세린", "glycerol",
+    "cellulose", "셀룰로오스", "starch", "전분", "silica", "이산화규소",
+    "magnesiumstearate", "스테아린산마그네슘", "stearicacid", "스테아르산",
+    "sugar", "설탕", "glucose", "포도당", "fructose", "과당",
+    "flavor", "flavour", "향료", "color", "colour", "착색료",
+    "salt", "소금", "sodium", "나트륨", "calcium", "칼슘",
+    "potassium", "칼륨", "magnesium", "마그네슘",
+    "caffeine", "카페인", "vitamin", "비타민",
+}
+
+
+def is_valid_barcode(value: str) -> bool:
+    """빈값·N/A·nan 등 가짜 바코드가 DB의 빈 행과 일치하는 것을 방지합니다."""
+    barcode = normalize_barcode(value)
+    if not barcode or barcode in {"nan", "none", "null", "na", "nobarcode", "unknown"}:
+        return False
+    # 일반적인 UPC/EAN/GTIN 길이를 포함하되, 문자 혼합 코드도 일부 허용
+    if not 8 <= len(barcode) <= 18:
+        return False
+    return sum(ch.isdigit() for ch in barcode) >= 6
+
+
+def product_name_similarity(left: str, right: str) -> float:
+    """정규화 제품명 두 개의 보수적인 유사도를 계산합니다."""
+    a = normalize_product_name(left)
+    b = normalize_product_name(right)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    sequence_score = SequenceMatcher(None, a, b).ratio()
+
+    # 부분 포함은 짧은 문자열이 충분히 길고 전체 이름의 상당 부분을 차지할 때만 인정
+    containment_score = 0.0
+    if len(shorter) >= 5 and shorter in longer:
+        length_ratio = len(shorter) / max(len(longer), 1)
+        if length_ratio >= 0.65:
+            containment_score = 0.86 + min(0.13, (length_ratio - 0.65) * 0.35)
+
+    return max(sequence_score, containment_score)
+
+
+def build_user_product_candidates(brand, product_name, translated_product_name, multilingual_candidates):
+    """OCR 결과에서 제품명 비교에 사용할 후보를 중복 없이 생성합니다."""
+    raw_candidates = []
+    raw_candidates.extend(ensure_text_list(multilingual_candidates))
+    raw_candidates.extend([
+        ensure_text(product_name, ""),
+        ensure_text(translated_product_name, ""),
+    ])
+
+    brand_text = ensure_text(brand, "")
+    product_text = ensure_text(product_name, "")
+    if brand_text and product_text:
+        raw_candidates.append(f"{brand_text} {product_text}")
+
+    normalized = []
+    for candidate in raw_candidates:
+        norm = normalize_product_name(candidate)
+        if len(norm) >= 3 and norm not in normalized:
+            normalized.append(norm)
+    return normalized
+
+
+def _best_product_similarity(user_candidates, db_product_norm):
+    if not db_product_norm:
+        return 0.0
+    return max((product_name_similarity(candidate, db_product_norm) for candidate in user_candidates), default=0.0)
+
+
+def find_safe_db_match(
+    df,
+    brand,
+    product_name,
+    translated_product_name,
+    barcode,
+    multilingual_candidates,
+    translated_ingredients,
+):
+    """
+    DB 오탐 방지형 매칭.
+
+    핵심 원칙:
+    1. 유효한 바코드 완전 일치
+    2. 제품명 완전 일치
+    3. 매우 높은 제품명 유사도
+    4. 성분 단독 일치는 제품명이 모순되지 않을 때만 DB 행을 확정
+
+    성분은 일치하지만 제품명이 전혀 다른 경우에는 DB 상세 행을 연결하지 않고
+    '정밀 확인 필요' 후보로만 남깁니다. 따라서 EVP 3D가 orange + 행으로
+    잘못 표시되는 유형의 오탐을 차단합니다.
+    """
+    result = {
+        "matched_row": None,
+        "match_type": "🟢 매칭되지 않음",
+        "is_ingredient_only_match": False,
+        "is_ambiguous_multilingual": False,
+        "matched_ingredient_str": "",
+        "ingredient_candidate_name": "",
+        "ingredient_candidate_ingredient": "",
+        "match_warning": "",
+        "match_confidence": 0.0,
+    }
+
+    if df is None or df.empty:
+        return result
+
+    user_candidates = build_user_product_candidates(
+        brand, product_name, translated_product_name, multilingual_candidates
+    )
+    user_main_norm = normalize_product_name(product_name)
+    norm_user_barcode = normalize_barcode(barcode)
+
+    # 1순위: 바코드 완전 일치. 빈 DB 바코드는 비교 대상에서 제외.
+    if is_valid_barcode(norm_user_barcode) and "norm_barcode" in df.columns:
+        valid_mask = df["norm_barcode"].fillna("").astype(str).map(is_valid_barcode)
+        barcode_matches = df[valid_mask & (df["norm_barcode"].astype(str) == norm_user_barcode)]
+        if not barcode_matches.empty:
+            # 동일 바코드가 여러 행이면 제품명 유사도가 가장 높은 행 선택
+            best_index = None
+            best_score = -1.0
+            for idx_row, row in barcode_matches.iterrows():
+                score = _best_product_similarity(user_candidates, ensure_text(row.get("norm_product"), ""))
+                if score > best_score:
+                    best_index, best_score = idx_row, score
+            result.update({
+                "matched_row": df.loc[best_index],
+                "match_type": "1순위 바코드 완전 일치",
+                "match_confidence": 1.0,
+            })
+            return result
+
+    # 2순위: 정규화 제품명 완전 일치
+    if user_candidates and "norm_product" in df.columns:
+        exact_rows = df[df["norm_product"].fillna("").astype(str).isin(user_candidates)]
+        if not exact_rows.empty:
+            result.update({
+                "matched_row": exact_rows.iloc[0],
+                "match_type": "2순위 제품명 완전 일치",
+                "match_confidence": 1.0,
+            })
+            return result
+
+    # 3순위: 첫 번째 포함 행을 즉시 선택하지 않고 전체 DB 중 최고 점수만 선택
+    best_fuzzy_row = None
+    best_fuzzy_score = 0.0
+    if user_candidates and "norm_product" in df.columns:
+        for _, row in df.iterrows():
+            db_norm = ensure_text(row.get("norm_product"), "")
+            if len(db_norm) < 3:
+                continue
+            score = _best_product_similarity(user_candidates, db_norm)
+            if score > best_fuzzy_score:
+                best_fuzzy_score = score
+                best_fuzzy_row = row
+
+    # 0.90 이상만 제품명 파생/표기 차이 후보로 인정
+    if best_fuzzy_row is not None and best_fuzzy_score >= 0.90:
+        result.update({
+            "matched_row": best_fuzzy_row,
+            "match_type": f"3순위 제품명 고유사도 일치 ({best_fuzzy_score:.0%})",
+            "is_ambiguous_multilingual": True,
+            "match_confidence": best_fuzzy_score,
+        })
+        return result
+
+    # 4순위: 성분 비교. 일반 원료는 제외하고 구체적인 성분만 사용
+    user_ingredient_tokens = []
+    for ing in translated_ingredients or []:
+        user_ingredient_tokens.extend(tokenize_text(ing.get("raw_name", "")))
+        user_ingredient_tokens.extend(tokenize_text(ing.get("ko_name", "")))
+    user_ingredient_tokens = list(dict.fromkeys(
+        token for token in user_ingredient_tokens
+        if len(token) >= 4 and token not in COMMON_INGREDIENT_TOKENS
+    ))
+
+    best_ingredient_row = None
+    best_intersection = set()
+    best_ing_product_score = 0.0
+
+    if user_ingredient_tokens and "성분명" in df.columns:
+        user_set = set(user_ingredient_tokens)
+        for _, row in df.iterrows():
+            db_tokens = {
+                token for token in tokenize_text(row.get("성분명", ""))
+                if len(token) >= 4 and token not in COMMON_INGREDIENT_TOKENS
+            }
+            intersection = user_set & db_tokens
+            if not intersection:
+                continue
+
+            product_score = _best_product_similarity(
+                user_candidates,
+                ensure_text(row.get("norm_product"), ""),
+            )
+
+            # 더 많은 구체 성분 일치 > 더 긴 성분명 > 제품명 유사도 순으로 선택
+            current_rank = (
+                len(intersection),
+                max((len(token) for token in intersection), default=0),
+                product_score,
+            )
+            best_rank = (
+                len(best_intersection),
+                max((len(token) for token in best_intersection), default=0),
+                best_ing_product_score,
+            )
+            if current_rank > best_rank:
+                best_ingredient_row = row
+                best_intersection = intersection
+                best_ing_product_score = product_score
+
+    if best_ingredient_row is not None:
+        matched_ingredients = ", ".join(sorted(best_intersection))
+        candidate_name = ensure_text(best_ingredient_row.get("제품명"), "확인 불가")
+        result.update({
+            "is_ingredient_only_match": True,
+            "matched_ingredient_str": matched_ingredients,
+            "ingredient_candidate_name": candidate_name,
+            "ingredient_candidate_ingredient": ensure_text(best_ingredient_row.get("성분명"), "확인 불가"),
+        })
+
+        # 제품명이 식별되지 않았거나 제품명도 어느 정도 유사할 때만 해당 DB 행 연결
+        product_unreadable = not user_main_norm or product_name in {"확인 불가", ""}
+        if product_unreadable or best_ing_product_score >= 0.72:
+            result.update({
+                "matched_row": best_ingredient_row,
+                "match_type": "4순위 성분 일치 + 제품명 보조 확인",
+                "match_confidence": max(0.72, best_ing_product_score),
+                "match_warning": "제품명 또는 바코드 완전 일치가 아니므로 현품 성분표를 다시 확인해야 합니다.",
+            })
+        else:
+            result.update({
+                "matched_row": None,
+                "match_type": "성분 후보 일치 · 제품명 불일치",
+                "match_confidence": 0.0,
+                "match_warning": (
+                    f"OCR 제품명 '{ensure_text(product_name, '확인 불가')}'과 DB 제품명 "
+                    f"'{candidate_name}'이 서로 달라 DB 상세정보를 확정 연결하지 않았습니다. "
+                    f"성분 후보({matched_ingredients})만 별도 확인하세요."
+                ),
+            })
+        return result
+
+    # 상세내용의 임의 부분문자열 매칭은 오탐 위험이 높아 확정 매칭에서 제외
+    return result
+
 def get_clean_db_value(row, column_name):
     if row is None: return "해당 없음"
     val = row.get(column_name)
@@ -1477,7 +1731,8 @@ def load_and_standardize_db():
         if '제품명' in df.columns:
             df['norm_product'] = df['제품명'].apply(normalize_product_name)
         if '바코드명' in df.columns:
-            df['norm_barcode'] = df['바코드명'].astype(str).str.replace(r'\s+', '', regex=True).str.lower()
+            # NaN을 문자열 'nan'으로 바꾸지 않고, OCR과 동일한 규칙으로 정규화
+            df['norm_barcode'] = df['바코드명'].apply(normalize_barcode)
             
         return df
     except Exception as e:
@@ -1662,6 +1917,10 @@ for idx, data in enumerate(st.session_state["history"]):
     is_ingredient_only_match = data.get("is_ingredient_only_match", False)
     is_ambiguous_multilingual = data.get("is_ambiguous_multilingual", False)
     matched_ingredient_str = data.get("matched_ingredient_str", "")
+    ingredient_candidate_name = data.get("ingredient_candidate_name", "")
+    ingredient_candidate_ingredient = data.get("ingredient_candidate_ingredient", "")
+    match_warning = data.get("match_warning", "")
+    match_confidence = float(data.get("match_confidence", 0.0) or 0.0)
 
     reg_num = (
         str(matched_row["등록번호"]).split(".")[0]
@@ -1697,6 +1956,8 @@ for idx, data in enumerate(st.session_state["history"]):
                 ("성분 단독 매칭", "예" if is_ingredient_only_match else "아니오"),
                 ("부분/파생 매칭", "예" if is_ambiguous_multilingual else "아니오"),
                 ("일치 성분", matched_ingredient_str if matched_ingredient_str else "해당없음"),
+                ("성분 후보 DB", ingredient_candidate_name if ingredient_candidate_name else "해당없음"),
+                ("매칭 신뢰도", f"{match_confidence:.0%}" if match_confidence else "확정 안 함"),
             ],
             icon="🧾",
         )
@@ -1715,10 +1976,24 @@ for idx, data in enumerate(st.session_state["history"]):
             icon="📚",
         )
     else:
-        st.markdown(
-            '<div class="soft-note">현재 DB 기준으로 일치하는 위해 규제 이력이 확인되지 않았습니다.</div>',
-            unsafe_allow_html=True,
-        )
+        if match_warning:
+            st.warning(match_warning)
+            if ingredient_candidate_name:
+                render_kv_card(
+                    "성분 기준 확인 후보 (DB 상세 확정 아님)",
+                    [
+                        ("후보 제품명(DB)", ingredient_candidate_name),
+                        ("후보 성분명(DB)", ingredient_candidate_ingredient or "확인 불가"),
+                        ("일치 성분", matched_ingredient_str or "확인 불가"),
+                        ("처리", "제품명 불일치로 DB 상세정보·원본 이미지는 연결하지 않음"),
+                    ],
+                    icon="⚠️",
+                )
+        else:
+            st.markdown(
+                '<div class="soft-note">현재 DB 기준으로 제품명 또는 유효 바코드가 일치하는 위해 규제 이력이 확인되지 않았습니다.</div>',
+                unsafe_allow_html=True,
+            )
 
     render_action_guide(decision_situation, reg_num, matched_row, product_name, is_ingredient_only_match)
 
@@ -1804,6 +2079,8 @@ if st.session_state["history"]:
                             <ul style="background-color: #f8f9fa; padding: 10px 10px 10px 30px; border-radius: 4px;">
                                 <li><b>등록번호:</b> {reg_num}</li>
                                 <li><b>DB 매칭 상태:</b> {item['match_type']}</li>
+                                <li><b>성분 후보 DB:</b> {item.get('ingredient_candidate_name') or '해당없음'}</li>
+                                <li><b>대조 설명:</b> {item.get('match_warning') or '해당없음'}</li>
                             </ul>
                         """
                         
@@ -2018,82 +2295,41 @@ if input_files:
 
         status_box.status("🔍 2단계: 위해 의약품 DB와 교차 검증하고 있습니다...", expanded=False)
         
-        matched_row = None
-        match_type = "🟢 매칭되지 않음"
-        is_ingredient_only_match = False
-        is_ambiguous_multilingual = False
-        matched_ingredient_str = ""
-        
-        if df_db is not None:
-            user_norm_candidates = [normalize_product_name(c) for c in multilingual_candidates if c]
-            user_main_norm = normalize_product_name(product_name)
-            if user_main_norm and user_main_norm not in user_norm_candidates:
-                user_norm_candidates.append(user_main_norm)
-                
-            norm_user_barcode = normalize_barcode(barcode)
-            user_ingredient_tokens = []
-            for ing in translated_ingredients:
-                user_ingredient_tokens.extend(tokenize_text(ing.get('raw_name', '')))
-                user_ingredient_tokens.extend(tokenize_text(ing.get('ko_name', '')))
-                
-            if norm_user_barcode and 'norm_barcode' in df_db.columns:
-                b_match = df_db[df_db['norm_barcode'] == norm_user_barcode]
-                if not b_match.empty:
-                    matched_row = b_match.iloc[0]
-                    match_type = "1순위 바코드 일치"
+        match_result = find_safe_db_match(
+            df=df_db,
+            brand=brand,
+            product_name=product_name,
+            translated_product_name=translated_product_name,
+            barcode=barcode,
+            multilingual_candidates=multilingual_candidates,
+            translated_ingredients=translated_ingredients,
+        )
 
-            if matched_row is None and user_norm_candidates and 'norm_product' in df_db.columns:
-                for idx_row, row in df_db.iterrows():
-                    db_norm = str(row['norm_product'])
-                    if db_norm in user_norm_candidates or any(uc == db_norm for uc in user_norm_candidates if uc):
-                        matched_row = row
-                        match_type = "2/3순위 제품명 다국어 정규화 일치"
-                        break
+        matched_row = match_result["matched_row"]
+        match_type = match_result["match_type"]
+        is_ingredient_only_match = match_result["is_ingredient_only_match"]
+        is_ambiguous_multilingual = match_result["is_ambiguous_multilingual"]
+        matched_ingredient_str = match_result["matched_ingredient_str"]
+        ingredient_candidate_name = match_result["ingredient_candidate_name"]
+        ingredient_candidate_ingredient = match_result["ingredient_candidate_ingredient"]
+        match_warning = match_result["match_warning"]
+        match_confidence = match_result["match_confidence"]
 
-            if matched_row is None and 'norm_product' in df_db.columns:
-                for idx_row, row in df_db.iterrows():
-                    db_norm = str(row['norm_product'])
-                    if not db_norm: continue
-                    if any(((uc in db_norm) or (db_norm in uc)) and len(uc) >= 4 for uc in user_norm_candidates if uc):
-                        matched_row = row
-                        is_ambiguous_multilingual = True
-                        match_type = "제품명 파생/부분 포함 (맛, 제형 차이 의심)"
-                        break
+        is_totally_unreadable = (
+            product_name in ["확인 불가", ""]
+            and barcode in ["바코드 확인 불가", ""]
+            and not translated_ingredients
+        )
 
-            if matched_row is None and user_ingredient_tokens and '성분명' in df_db.columns:
-                for idx_row, row in df_db.iterrows():
-                    db_ing_tokens = tokenize_text(row['성분명'])
-                    intersection = set(user_ingredient_tokens) & set(db_ing_tokens)
-                    if intersection:
-                        matched_row = row
-                        is_ingredient_only_match = True
-                        matched_ingredient_str = ', '.join(intersection)
-                        match_type = "4순위 성분명 토큰 일치"
-                        break
-
-            if matched_row is None:
-                for idx_row, row in df_db.iterrows():
-                    detail_str = str(row.get('상세내용', '')).lower() + str(row.get('관련근거', '')).lower() + str(row.get('통관보류사유내용', '')).lower()
-                    if user_main_norm and user_main_norm in detail_str:
-                        matched_row = row
-                        match_type = "5순위 상세 기재내역 매칭"
-                        break
-
-        decision_situation = "승인"
-        is_high_risk_ingredient = False
-        
-        if matched_row is not None:
-            reason_pool = str(matched_row.get('통관보류사유내용', '')).lower() + str(matched_row.get('관련근거', '')).lower()
-            if any(kw in reason_pool for kw in ['마약', '향정', '향정신성', '대마', '코데인', '디히드로코데인', '반입금지', '반입 금지']):
-                is_high_risk_ingredient = True
-
-        is_totally_unreadable = (product_name in ['확인 불가', ''] and barcode in ['바코드 확인 불가', ''] and not translated_ingredients)
-
+        # 판정 원칙: 약한 성분 후보 또는 제품명 불일치만으로 '반입 금지' 확정 금지
         if is_totally_unreadable:
             decision_situation = "제한B"
-        elif matched_row is not None and (match_type in ["1순위 바코드 일치", "2/3순위 제품명 다국어 정규화 일치"] or is_high_risk_ingredient):
+        elif matched_row is not None and match_type in [
+            "1순위 바코드 완전 일치",
+            "2순위 제품명 완전 일치",
+        ]:
             decision_situation = "금지"
-        elif matched_row is not None and (is_ingredient_only_match or is_ambiguous_multilingual or match_type in ["5순위 상세 기재내역 매칭", "제품명 파생/부분 포함 (맛, 제형 차이 의심)"]):
+        elif matched_row is not None or is_ingredient_only_match:
             decision_situation = "제한A"
         else:
             decision_situation = "승인"
@@ -2128,7 +2364,10 @@ if input_files:
                 **2. DB 대조 결과**
                 * 등록번호: <span style="background-color: #e8f7ff; color: #1c7ed6; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{reg_num}</span>
                 * DB 매칭 상태: <span style="{match_badge}">{display_match_text}</span>
+                * 매칭 신뢰도: <span style="background-color: #f1f5f9; color: #334155; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 14px;">{f"{match_confidence:.0%}" if match_confidence else "확정 안 함"}</span>
                 """, unsafe_allow_html=True)
+            if match_warning:
+                st.warning(match_warning)
 
         status_box.status("⚡ 3단계: 성분 번역 맵 구축 및 조치 표준 가이드를 통합 매핑 중입니다...", expanded=False)
         
@@ -2145,6 +2384,10 @@ if input_files:
             "is_ingredient_only_match": is_ingredient_only_match,
             "is_ambiguous_multilingual": is_ambiguous_multilingual,
             "matched_ingredient_str": matched_ingredient_str,
+            "ingredient_candidate_name": ingredient_candidate_name,
+            "ingredient_candidate_ingredient": ingredient_candidate_ingredient,
+            "match_warning": match_warning,
+            "match_confidence": match_confidence,
             "gemini_model_used": used_gemini_model,
         }
         
