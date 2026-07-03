@@ -2175,6 +2175,20 @@ COMMON_INGREDIENT_TOKENS = {
     "salt", "소금", "sodium", "나트륨", "calcium", "칼슘",
     "potassium", "칼륨", "magnesium", "마그네슘",
     "caffeine", "카페인", "vitamin", "비타민",
+
+    # 아래 값은 특정 성분명이 아니라 여러 식물 원료에 반복되는 일반 부위·가공 표현입니다.
+    # bark/leaf 하나만 같다는 이유로 전혀 다른 제품(Marathon21 등)이 선택되는 것을 방지합니다.
+    "bark", "껍질", "수피",
+    "leaf", "leaves", "잎", "엽",
+    "root", "roots", "뿌리", "근",
+    "seed", "seeds", "씨앗", "종자",
+    "stem", "stems", "줄기",
+    "flower", "flowers", "꽃",
+    "fruit", "fruits", "과실",
+    "herb", "herbs", "허브",
+    "extract", "extracts", "추출물",
+    "powder", "분말",
+    "peel", "껍질추출물",
 }
 
 
@@ -2561,14 +2575,385 @@ def find_unique_brand_prefix_core_match(
 
 
 
+
+# =============================================================================
+# 고유 모델코드 기반 제품명 보조 매칭
+# =============================================================================
+#
+# 필요한 이유
+# -----------------------------------------------------------------------------
+# 포장 전면에는 다음처럼 표시되는 경우가 많습니다.
+#
+#   브랜드: ROCK STAR
+#   모델명: R80
+#   설명문: Thermogenic Hyper-Metabolizer
+#
+# OCR은 글자 크기와 배치 때문에 이를 다음처럼 읽을 수 있습니다.
+#
+#   product_name = "R80 Thermogenic Hyper-Metabolizer"
+#
+# 반면 DB 제품명은 다음처럼 브랜드와 모델명만 등록될 수 있습니다.
+#
+#   "ROCK STAR R80"
+#
+# 일반 문자열 유사도만 사용하면 공통 문자가 적어 점수가 낮아지고,
+# 뒤의 성분 단계에서 bark, leaf 같은 일반 단어가 일치한 엉뚱한 DB 행이 선택될 수 있습니다.
+#
+# 아래 함수들은 R80처럼 영문과 숫자가 함께 있는 식별코드를 추출하고,
+# 그 코드가 DB 제품명에서 유일하게 발견될 때 제품 식별의 강한 근거로 사용합니다.
+#
+# 안전 원칙
+# -----------------------------------------------------------------------------
+# 1. 숫자만 있는 값은 모델코드로 인정하지 않습니다.
+# 2. 영문만 있는 일반 단어도 모델코드로 인정하지 않습니다.
+# 3. 영문과 숫자가 모두 포함된 3~14자 토큰만 사용합니다.
+# 4. 동일 코드가 여러 DB 행에 있으면 OCR 브랜드 또는 제품명 유사도로 한 번 더 구분합니다.
+# 5. 그래도 하나로 특정되지 않으면 임의로 첫 행을 선택하지 않습니다.
+# =============================================================================
+
+# 모델코드처럼 보이지만 의약품 성분·비타민·용량 표현으로 자주 등장하는 값입니다.
+# 이 목록은 강한 제품 식별코드에서 제외합니다.
+MODEL_CODE_STOPWORDS = {
+    "b12", "b6", "b1", "b2", "b3", "b5", "b7", "b9",
+    "d2", "d3", "k1", "k2",
+    "5htp", "coq10", "q10",
+    "h2o", "omega3", "omega6", "omega9",
+    "100mg", "200mg", "500mg", "1000mg",
+}
+
+
+def extract_distinctive_model_codes(text):
+    """
+    제품명에서 R80처럼 영문과 숫자가 함께 들어간 고유 모델코드를 추출합니다.
+
+    처리 예:
+        "R80 Thermogenic Hyper-Metabolizer" -> {"r80"}
+        "ROCK STAR R80"                     -> {"r80"}
+        "EVP 3D"                            -> {"evp3d"}
+        "X-50 MAX"                          -> {"x50"}
+
+    반환값:
+        소문자 compact 모델코드 집합(set[str])
+
+    주의:
+        이 함수는 제품명/브랜드 문자열에만 사용합니다.
+        바코드나 성분표 전체에 적용하면 불필요한 숫자 코드가 포함될 수 있습니다.
+    """
+    if text is None:
+        return set()
+
+    try:
+        if pd.isna(text):
+            return set()
+    except Exception:
+        pass
+
+    value = unicodedata.normalize("NFKC", str(text)).casefold().strip()
+    if not value or value in {"nan", "none", "null", "확인 불가"}:
+        return set()
+
+    # 하이픈·슬래시 등으로 나뉜 코드도 복원할 수 있도록 영숫자 덩어리를 추출합니다.
+    raw_tokens = re.findall(r"[a-z0-9]+", value)
+    candidates = set()
+
+    def add_candidate(token):
+        compact = re.sub(r"[^a-z0-9]", "", token.casefold())
+
+        # 지나치게 짧거나 긴 값은 식별코드로 보기 어렵습니다.
+        if not 3 <= len(compact) <= 14:
+            return
+
+        # 영문과 숫자가 모두 있어야 합니다.
+        if not re.search(r"[a-z]", compact):
+            return
+        if not re.search(r"\d", compact):
+            return
+
+        # 숫자가 너무 많으면 바코드·용량값일 가능성이 높습니다.
+        if sum(ch.isdigit() for ch in compact) > 6:
+            return
+
+        if compact in MODEL_CODE_STOPWORDS:
+            return
+
+        # 500mg, 100ml 등 명백한 용량 표현은 제외합니다.
+        if re.fullmatch(r"\d+(?:mg|ml|g|kg|oz|lb)", compact):
+            return
+
+        candidates.add(compact)
+
+    # R80, Marathon21처럼 한 덩어리로 읽힌 코드
+    for token in raw_tokens:
+        add_candidate(token)
+
+    # R-80, X 50, EVP 3D처럼 OCR/인쇄상 분리된 인접 토큰을 결합합니다.
+    for i in range(len(raw_tokens) - 1):
+        left = raw_tokens[i]
+        right = raw_tokens[i + 1]
+        combined = left + right
+
+        # 왼쪽이 짧은 브랜드/모델 문자이고 오른쪽에 숫자가 있을 때만 결합합니다.
+        if (
+            1 <= len(left) <= 5
+            and len(right) <= 5
+            and re.search(r"[a-z]", combined)
+            and re.search(r"\d", combined)
+        ):
+            add_candidate(combined)
+
+    return candidates
+
+
+def _collect_ocr_model_codes(
+    brand,
+    product_name,
+    translated_product_name,
+    multilingual_candidates,
+):
+    """
+    OCR의 브랜드·제품명·번역명·다국어 후보 전체에서 모델코드를 모읍니다.
+
+    브랜드 자체가 'R80'처럼 잘못 분리되어도 놓치지 않도록 모든 필드를 검사합니다.
+    """
+    sources = [
+        ensure_text(brand, ""),
+        ensure_text(product_name, ""),
+        ensure_text(translated_product_name, ""),
+    ]
+    sources.extend(ensure_text_list(multilingual_candidates))
+
+    codes = set()
+    for source in sources:
+        codes.update(extract_distinctive_model_codes(source))
+    return codes
+
+
+def _product_word_overlap_score(user_raw_candidates, db_product_name):
+    """
+    OCR 제품명 원문 후보와 DB 제품명의 단어 교집합 비율을 계산합니다.
+
+    모델코드가 여러 DB 행에 중복될 때 보조 정렬 기준으로만 사용합니다.
+    모델코드 자체는 비교에서 제외하여 일반 설명 단어의 실제 겹침 정도를 봅니다.
+    """
+    db_words = set(normalize_product_words(db_product_name))
+    if not db_words:
+        return 0.0
+
+    best = 0.0
+    for candidate in user_raw_candidates:
+        user_words = set(normalize_product_words(candidate))
+        if not user_words:
+            continue
+
+        # 모델코드 토큰을 제거한 일반 제품명 단어끼리 비교합니다.
+        user_codes = extract_distinctive_model_codes(candidate)
+        db_codes = extract_distinctive_model_codes(db_product_name)
+
+        filtered_user = {
+            word for word in user_words
+            if word not in user_codes and word not in PRODUCT_WORD_NOISE
+        }
+        filtered_db = {
+            word for word in db_words
+            if word not in db_codes and word not in PRODUCT_WORD_NOISE
+        }
+
+        if not filtered_user or not filtered_db:
+            continue
+
+        intersection = filtered_user & filtered_db
+        score = len(intersection) / max(len(filtered_user), 1)
+        best = max(best, score)
+
+    return best
+
+
+def find_unique_model_code_match(
+    df,
+    brand,
+    product_name,
+    translated_product_name,
+    multilingual_candidates,
+):
+    """
+    OCR 모델코드가 DB 제품명에서 유일하게 일치하는 행을 찾습니다.
+
+    대표 사례:
+        OCR: "R80 Thermogenic Hyper-Metabolizer"
+        DB : "ROCK STAR R80"
+        결과: R80 코드 완전 일치로 DB 행 선택
+
+    반환값:
+        {
+            "row": pandas.Series 또는 None,
+            "code": 일치한 모델코드,
+            "confidence": 0.0~1.0,
+            "warning": 모호한 경우 설명
+        }
+    """
+    empty_result = {
+        "row": None,
+        "code": "",
+        "confidence": 0.0,
+        "warning": "",
+    }
+
+    if df is None or df.empty or "제품명" not in df.columns:
+        return empty_result
+
+    ocr_codes = _collect_ocr_model_codes(
+        brand,
+        product_name,
+        translated_product_name,
+        multilingual_candidates,
+    )
+    if not ocr_codes:
+        return empty_result
+
+    # 각 DB 행에 포함된 모델코드를 미리 계산하고 OCR 코드와 교집합을 찾습니다.
+    candidate_rows = []
+    for row_index, row in df.iterrows():
+        db_name = ensure_text(row.get("제품명"), "")
+        db_codes = extract_distinctive_model_codes(db_name)
+        common_codes = ocr_codes & db_codes
+
+        for code in common_codes:
+            candidate_rows.append({
+                "row_index": row_index,
+                "row": row,
+                "code": code,
+                "db_name": db_name,
+            })
+
+    if not candidate_rows:
+        return empty_result
+
+    # 동일 행·동일 코드 중복을 제거합니다.
+    deduped = {}
+    for item in candidate_rows:
+        deduped[(item["row_index"], item["code"])] = item
+    candidate_rows = list(deduped.values())
+
+    # 코드별로 몇 개 DB 행에 등장하는지 계산합니다.
+    code_to_rows = {}
+    for item in candidate_rows:
+        code_to_rows.setdefault(item["code"], []).append(item)
+
+    # DB에서 유일하게 발견되는 코드가 있으면 가장 안전한 강한 매칭입니다.
+    unique_code_candidates = [
+        items[0] for code, items in code_to_rows.items()
+        if len({item["row_index"] for item in items}) == 1
+    ]
+
+    if len(unique_code_candidates) == 1:
+        chosen = unique_code_candidates[0]
+        return {
+            "row": chosen["row"],
+            "code": chosen["code"],
+            "confidence": 0.99,
+            "warning": "",
+        }
+
+    # 유일 코드 후보가 여러 개면 더 긴 코드를 우선합니다.
+    # 예: x5와 rx500이 동시에 추출됐다면 rx500이 식별력이 더 높습니다.
+    if unique_code_candidates:
+        unique_code_candidates.sort(key=lambda item: len(item["code"]), reverse=True)
+        if (
+            len(unique_code_candidates) == 1
+            or len(unique_code_candidates[0]["code"]) > len(unique_code_candidates[1]["code"])
+        ):
+            chosen = unique_code_candidates[0]
+            return {
+                "row": chosen["row"],
+                "code": chosen["code"],
+                "confidence": 0.98,
+                "warning": "",
+            }
+
+    # 같은 모델코드가 여러 DB 행에 있으면 OCR 브랜드로 먼저 구분합니다.
+    brand_norm = normalize_product_name(brand)
+    if brand_norm:
+        brand_matches = []
+        for item in candidate_rows:
+            db_norm = normalize_product_name(item["db_name"])
+            if db_norm.startswith(brand_norm) or brand_norm in db_norm:
+                brand_matches.append(item)
+
+        unique_brand_rows = {}
+        for item in brand_matches:
+            unique_brand_rows[item["row_index"]] = item
+
+        if len(unique_brand_rows) == 1:
+            chosen = next(iter(unique_brand_rows.values()))
+            return {
+                "row": chosen["row"],
+                "code": chosen["code"],
+                "confidence": 0.98,
+                "warning": "",
+            }
+
+    # 마지막으로 제품명 유사도와 단어 겹침을 조합해 한 행이 명확히 앞서는지 확인합니다.
+    user_candidates = build_user_product_candidates(
+        brand,
+        product_name,
+        translated_product_name,
+        multilingual_candidates,
+    )
+    user_raw_candidates = build_user_product_raw_candidates(
+        brand,
+        product_name,
+        translated_product_name,
+        multilingual_candidates,
+    )
+
+    ranked = []
+    unique_rows = {}
+    for item in candidate_rows:
+        unique_rows[item["row_index"]] = item
+
+    for item in unique_rows.values():
+        db_norm = normalize_product_name(item["db_name"])
+        name_score = _best_product_similarity(user_candidates, db_norm)
+        word_score = _product_word_overlap_score(user_raw_candidates, item["db_name"])
+        combined_score = (name_score * 0.65) + (word_score * 0.35)
+        ranked.append((combined_score, item))
+
+    ranked.sort(key=lambda pair: pair[0], reverse=True)
+
+    if ranked:
+        best_score, best_item = ranked[0]
+        second_score = ranked[1][0] if len(ranked) > 1 else 0.0
+
+        # 가장 높은 후보가 두 번째보다 충분히 앞설 때만 확정합니다.
+        if best_score >= 0.55 and (best_score - second_score) >= 0.10:
+            return {
+                "row": best_item["row"],
+                "code": best_item["code"],
+                "confidence": min(0.97, max(0.90, best_score)),
+                "warning": "",
+            }
+
+    return {
+        "row": None,
+        "code": "",
+        "confidence": 0.0,
+        "warning": (
+            "OCR에서 고유 모델코드를 확인했지만 동일 코드가 여러 DB 제품에 존재하여 "
+            "브랜드 또는 바코드 확인이 필요합니다."
+        ),
+    }
+
+
 # -----------------------------------------------------------------------------
 # 함수: find_safe_db_match
 # 목적: EVP 3D가 orange +로 연결되는 것과 같은 DB 오매칭을 방지하면서 최적 행을 찾습니다.
 # 매칭 우선순위:
 #   1) 유효 바코드 완전 일치
 #   2) 정규화 제품명 완전 일치
-#   3) 전체 DB 중 제품명 고유사도(90% 이상)
-#   4) 구체 성분 일치 + 제품명 보조 검증
+#   3) 브랜드가 빠진 핵심 제품명 완전 일치
+#   4) R80 같은 고유 모델코드 완전 일치
+#   5) 전체 DB 중 제품명 고유사도(90% 이상)
+#   6) 구체 성분 일치 + 제품명 보조 검증
 # 안전 원칙: 성분만 같고 제품명이 명확히 다르면 matched_row를 None으로 유지합니다.
 # -----------------------------------------------------------------------------
 # [초상세 함수 설명]
@@ -2710,6 +3095,38 @@ def find_safe_db_match(
             "match_confidence": brand_prefix_confidence,
         })
         return result
+
+    # 2.7순위: 영문+숫자 고유 모델코드 완전 일치
+    #
+    # 대표 사례:
+    #   OCR 제품명: R80 Thermogenic Hyper-Metabolizer
+    #   DB 제품명 : ROCK STAR R80
+    #
+    # R80은 일반 설명문보다 식별력이 높은 고유 코드입니다.
+    # DB에서 R80이 유일하게 한 행에만 존재하면 제품명 강한 일치로 처리합니다.
+    model_code_result = find_unique_model_code_match(
+        df=df,
+        brand=brand,
+        product_name=product_name,
+        translated_product_name=translated_product_name,
+        multilingual_candidates=multilingual_candidates,
+    )
+
+    if model_code_result["row"] is not None:
+        result.update({
+            "matched_row": model_code_result["row"],
+            "match_type": (
+                f"2순위 고유 모델코드 완전 일치 "
+                f"({model_code_result['code'].upper()})"
+            ),
+            "match_confidence": model_code_result["confidence"],
+        })
+        return result
+
+    # 모델코드가 여러 DB 행에 있어 확정하지 못한 경우에는 경고만 보존합니다.
+    # 이후 제품명 고유사도와 성분 비교를 계속 수행합니다.
+    if model_code_result["warning"]:
+        result["match_warning"] = model_code_result["warning"]
 
     # 3순위: 제품명 고유사도 비교
     # DB를 위에서부터 훑어 첫 포함 행을 선택하면 unrelated 제품이 걸릴 수 있으므로,
@@ -3518,13 +3935,16 @@ if input_files:
             "- Read Japanese, Chinese, Korean, and English labels exactly as printed.\n"
             "- Preserve Katakana, Hiragana, Kanji, Hangul, and Latin product names.\n"
             "- Extract brand names separately.\n"
-            "- Include every detected alias, translated name, romanized name, and likely DB name in multilingual_candidates.\n"
+            "- Preserve distinctive model codes exactly, including letter-number codes such as R80, X50, RX500, or EVP 3D.\n"
+            "- When a package contains brand + model code + marketing descriptor, keep the model code in product_name and move generic phrases such as Thermogenic Hyper-Metabolizer to package_features when appropriate.\n"
+            "- Include every detected alias, translated name, romanized name, likely DB name, and brand+model combination in multilingual_candidates.\n"
+            "- Example: a package printed as ROCK STAR / R80 / Thermogenic Hyper-Metabolizer should include 'R80', 'ROCK STAR R80', and the full printed phrase as candidates.\n"
             "- Example: メジコン せき止め錠 Pro, Medicon Cough Tablet Pro, 메지콘 기침약 프로 must be treated as candidate aliases.\n"
             "- Extract barcode numbers only when clearly visible.\n"
             "- CRITICAL: Return barcode as one single string only. Never return barcode as an array/list.\n"
             "- Extract all ingredients comprehensively, including sub-ingredients inside parentheses.\n\n"
             "FIELD RULES:\n"
-            "1. product_name: core shortest possible product name.\n"
+            "1. product_name: core shortest possible commercial product name or distinctive model code; do not use only a generic marketing/category phrase.\n"
             "2. translated_product_name: Korean translated product name if possible.\n"
             "3. multilingual_candidates: FULL product names including flavors, taglines, modifiers, original scripts, romanization, and translated variants.\n"
             "4. translated_ingredients: all ingredients. Categorize remark strictly as one of: "
@@ -3639,7 +4059,10 @@ if input_files:
             "1순위 바코드 완전 일치",
             "2순위 제품명 완전 일치",
             "2순위 핵심 제품명 완전 일치 · DB 브랜드 접두어 허용",
-        ]:
+        ] or (
+            matched_row is not None
+            and str(match_type).startswith("2순위 고유 모델코드 완전 일치")
+        ):
             # 브랜드가 OCR에서 빠졌더라도 핵심 제품명이 DB 이름의 끝부분과 단어 단위로
             # 완전히 일치한 경우에는 일반 fuzzy가 아니라 강한 제품명 식별 근거로 처리합니다.
             decision_situation = "금지"
